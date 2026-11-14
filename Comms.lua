@@ -1,11 +1,13 @@
 local _, ns = ...
 
+local lastWhisperReply = {} -- Per-player cooldown to prevent whisper spam/loops
+
 -- Ensure the ForeverTaxi channel is joined
 function ns.EnsureChannelJoined(verbose)
     local id = GetChannelName(ns.CHANNEL_NAME)
     if id and id > 0 then
         if verbose then
-            ns.Print("Already connected to channel |cffffffff" .. ns.CHANNEL_NAME .. "|r (#" .. id .. ").")
+            ns.Print("Connected to channel |cffffffff" .. ns.CHANNEL_NAME .. "|r (#" .. id .. ").")
         end
         return id
     end
@@ -20,16 +22,44 @@ function ns.EnsureChannelJoined(verbose)
     return id
 end
 
--- Broadcast a message to the ForeverTaxi channel (Hardware event required!)
-function ns.BroadcastToChannel(text)
-    local id = ns.EnsureChannelJoined()
+-- Find a joined channel ID by name (case-insensitive, supports "Trade" matching "Trade - City")
+function ns.ResolveJoinedChannelId(targetName)
+    if not targetName or targetName == "" then return nil, nil end
+    local id, actualName = GetChannelName(targetName)
     if id and id > 0 then
-        SendChatMessage(text, "CHANNEL", nil, id)
-        return true
-    else
-        ns.Print("|cffffaa00Channel '" .. ns.CHANNEL_NAME .. "' is still initializing. Click the button again in 1 second.|r")
-        return false
+        return id, actualName
     end
+
+    local list = { GetChannelList() }
+    local lowerTarget = string.lower(targetName)
+    for i = 1, #list, 3 do
+        local cId, cName = list[i], list[i + 1]
+        if cId and cName then
+            local lowerCName = string.lower(cName)
+            if lowerCName == lowerTarget or string.find(lowerCName, "^" .. lowerTarget) then
+                return cId, cName
+            end
+        end
+    end
+    return nil, nil
+end
+
+-- Pre-fill the active chat edit box and configure its chatType directly to the target channel
+-- (Avoids raw '|' characters which WoW blocks as invalid UI escape sequences)
+function ns.PrefillChannelChat(channelId, text, label)
+    if not channelId or channelId <= 0 then return false end
+
+    local editBox = ChatEdit_ChooseBoxForSend()
+    ChatEdit_ActivateChat(editBox)
+    editBox:SetAttribute("chatType", "CHANNEL")
+    editBox:SetAttribute("channelTarget", channelId)
+    ChatEdit_UpdateHeader(editBox)
+    editBox:SetText(text)
+    editBox:HighlightText()
+
+    local chLabel = label and ("#" .. channelId .. " " .. label) or ("#" .. channelId)
+    ns.Print("|cff00ccffChat ready for " .. chLabel .. "!|r Press |cffffffffEnter|r to send.")
+    return true
 end
 
 -- Send a silent addon whisper handshake
@@ -46,27 +76,31 @@ function ns.PassengerBroadcastRequest(cityName, tipAmount)
         return false
     end
 
+    local ftId = ns.EnsureChannelJoined()
+    if not ftId or ftId <= 0 then
+        ns.Print("|cffffaa00Channel '" .. ns.CHANNEL_NAME .. "' is initializing. Click Broadcast again in 1 second.|r")
+        return false
+    end
+
     local tip = tonumber(tipAmount) or ns.db.defaultTip or 2
     if tip < 0 then tip = 0 end
 
     local location = ns.GetCurrentLocation()
     local restTag = IsResting() and "RESTED" or "NOT_RESTED"
+    local msg = string.format("[FT:REQ] %s ~ %s ~ %dg ~ %s", cityData.name, location, tip, restTag)
 
-    local msg = string.format("[FT:REQ] %s | %s | %dg | %s", cityData.name, location, tip, restTag)
-    if ns.BroadcastToChannel(msg) then
-        ns.state.myRequest = {
-            city = cityData.name,
-            spell = cityData.spell,
-            location = location,
-            tip = tip,
-            timestamp = GetTime(),
-            claimedBy = nil,
-        }
-        ns.Print("Broadcasted request for |cff00ccff" .. cityData.name .. "|r (" .. tip .. "g tip).")
-        if ns.UpdateUI then ns.UpdateUI() end
-        return true
-    end
-    return false
+    ns.state.myRequest = {
+        city = cityData.name,
+        spell = cityData.spell,
+        location = location,
+        tip = tip,
+        timestamp = GetTime(),
+        claimedBy = nil,
+    }
+
+    ns.PrefillChannelChat(ftId, msg, ns.CHANNEL_NAME)
+    if ns.UpdateUI then ns.UpdateUI() end
+    return true
 end
 
 -- Passenger: Cancel active request
@@ -86,7 +120,7 @@ function ns.SendRestStatus(mageName, isResting)
     ns.SendAddonWhisper(mageName, "REST_STATUS:" .. (isResting and "1" or "0"))
 end
 
--- Mage: Broadcast active taxi advertisement (only lists selected/learned portals)
+-- Mage: Cycle through checked & joined advert channels and pre-fill the appropriate advert
 function ns.MageBroadcastAdvert()
     if not ns.state.isMage then return end
     local enabledCities = ns.GetEnabledMageCities()
@@ -96,14 +130,48 @@ function ns.MageBroadcastAdvert()
     end
 
     local names = {}
+    local aliasExamples = {}
     for _, c in ipairs(enabledCities) do
         table.insert(names, c.name)
+        table.insert(aliasExamples, "'" .. c.aliases[1] .. "'")
     end
     local cityList = table.concat(names, ", ")
-    local msg = string.format("[FT:MAGE] Active | Cities: %s | Whisper '!taxi <city>' or use ForeverTaxi!", cityList)
-    if ns.BroadcastToChannel(msg) then
-        ns.Print("Posted Mage Taxi advertisement to #" .. ns.CHANNEL_NAME .. " (" .. cityList .. ").")
+    local cmdList = table.concat(aliasExamples, " or ")
+
+    local activeTargets = {}
+    for _, entry in ipairs(ns.db.advertChannels or {}) do
+        if entry.enabled then
+            if string.lower(entry.name) == string.lower(ns.CHANNEL_NAME) then
+                ns.EnsureChannelJoined()
+            end
+            local cId, actualName = ns.ResolveJoinedChannelId(entry.name)
+            if cId then
+                table.insert(activeTargets, { id = cId, name = actualName or entry.name, configName = entry.name })
+            end
+        end
     end
+
+    if #activeTargets == 0 then
+        ns.Print("|cffff5555None of your checked advert channels are currently joined!|r Check at least one active channel in the Mage Dashboard.")
+        return
+    end
+
+    ns.state.advertCycleIdx = (ns.state.advertCycleIdx % #activeTargets) + 1
+    local target = activeTargets[ns.state.advertCycleIdx]
+
+    local msg
+    if string.lower(target.configName) == string.lower(ns.CHANNEL_NAME) then
+        msg = string.format("[FT:MAGE] Active ~ Cities: %s ~ Whisper %s or use ForeverTaxi!", cityList, cmdList)
+    else
+        msg = string.format(
+            "Inn-to-Inn Mage Portals (%s) from ANY inn! Whisper %s for an instant invite.",
+            cityList,
+            cmdList
+        )
+    end
+
+    ns.PrefillChannelChat(target.id, msg, target.name)
+    if ns.UpdateUI then ns.UpdateUI() end
 end
 
 -- Mage: Accept a request from the queue
@@ -136,12 +204,15 @@ function ns.MageAcceptRequest(customerName)
         ns.SendAddonWhisper(req.sender, "CLAIM:" .. req.city)
     end
 
-    SendChatMessage(
-        string.format("[ForeverTaxi] Accepted your portal request to %s! Make sure you are inside an inn so I can port to you.", req.city),
-        "WHISPER",
-        nil,
-        req.sender
-    )
+    -- Don't whisper fake dummy test users
+    if req.sender ~= "TestRider" then
+        SendChatMessage(
+            string.format("On my way with your %s portal! Make sure you're inside an inn so I can port right to you.", req.city),
+            "WHISPER",
+            nil,
+            req.sender
+        )
+    end
 
     if ns.ShowSecureHUD then ns.ShowSecureHUD() end
     if ns.UpdateUI then ns.UpdateUI() end
@@ -150,9 +221,13 @@ end
 -- Add or update a request in the Mage's queue
 local function UpsertRequest(sender, cityData, location, tip, isResting, source)
     local normSender = ns.NormalizeName(sender)
-    if not normSender or normSender == ns.NormalizeName(UnitName("player")) then return end
+    if not normSender then return end
 
-    -- Only queue requests for portals this Mage has enabled
+    local shortSender = Ambiguate(sender, "short")
+    if (UnitIsUnit and UnitIsUnit(sender, "player")) or shortSender == UnitName("player") then
+        return
+    end
+
     if ns.state.isMage and not ns.IsPortalEnabled(cityData.name) then
         return
     end
@@ -176,6 +251,26 @@ local function UpsertRequest(sender, cityData, location, tip, isResting, source)
     if ns.UpdateUI then ns.UpdateUI() end
 end
 
+-- Solo testing helper (/taxi test)
+function ns.InjectTestRequest()
+    local enabled = ns.GetEnabledMageCities()
+    local cityData = enabled[1] or (ns.CITIES[ns.state.faction] and ns.CITIES[ns.state.faction][1])
+    if not cityData then return end
+
+    ns.state.requests["TestRider"] = {
+        sender = "TestRider",
+        city = cityData.name,
+        spell = cityData.spell,
+        location = "Crossroads (Inn)",
+        tip = ns.db.defaultTip or 2,
+        isResting = true,
+        source = "WHISPER",
+        timestamp = GetTime(),
+    }
+    ns.Print("Added dummy request from |cffffffffTestRider|r for |cff00ccff" .. cityData.name .. "|r.")
+    if ns.UpdateUI then ns.UpdateUI() end
+end
+
 -- Parse public channel messages ([FT:REQ] and [FT:MAGE])
 local function ParseChannelMessage(msg, sender)
     local normSender = ns.NormalizeName(sender)
@@ -183,7 +278,7 @@ local function ParseChannelMessage(msg, sender)
 
     local reqBody = string.match(msg, "^%[FT:REQ%]%s*(.+)$")
     if reqBody then
-        local cityPart, locPart, tipPart, restPart = strsplit("|", reqBody)
+        local cityPart, locPart, tipPart, restPart = strsplit("~", reqBody)
         local cityData = ns.ResolveCity(cityPart, true)
         if cityData then
             local tip = tonumber(string.match(tipPart or "", "(%d+)")) or 0
@@ -206,37 +301,86 @@ local function ParseChannelMessage(msg, sender)
     end
 end
 
--- Parse whisper fallback command (!taxi <city>)
+-- Helper: Extract a requested faction city from natural player whispers
+local function ExtractCityFromWhisper(lowerMsg)
+    -- Ignore all automated addon replies
+    if string.find(lowerMsg, "^%[forever")
+        or string.find(lowerMsg, "^on my way")
+        or string.find(lowerMsg, "^hey! got you down")
+        or string.find(lowerMsg, "^sorry, i don't have") then
+        return nil, false
+    end
+
+    -- Strip optional leading/trailing punctuation (!, ?, .) and normalize spaces
+    local cleaned = string.gsub(lowerMsg, "[!%?%.,]+", " ")
+    cleaned = strtrim(string.gsub(cleaned, "%s+", " "))
+
+    -- 1. Direct match on full message (e.g., "org", "uc", "orgrimmar")
+    local direct = ns.ResolveCity(cleaned, true)
+    if direct then
+        return direct, true
+    end
+
+    -- 2. Command/phrase prefixes (e.g., "taxi org", "port to undercity", "portal org 5g", "tp uc")
+    local stripped = string.gsub(cleaned, "^(taxi|port|portal|tp|summon|inv|invite|need|lf|looking for|can i get|pls|please|to|a)+%s+", "")
+    stripped = string.gsub(stripped, "%s+(please|pls|ty|thanks|thx|inn|now|%d+g).*$", "")
+    local prefixMatch = ns.ResolveCity(stripped, true)
+    if prefixMatch then
+        return prefixMatch, true
+    end
+
+    -- 3. Sentence scan: look for a city keyword combined with portal/taxi/port intent
+    local hasIntent = string.find(cleaned, "port") or string.find(cleaned, "taxi") or string.find(cleaned, "tp") or string.find(cleaned, "inn")
+    local factionCities = ns.CITIES[ns.state.faction] or {}
+    for _, cityData in ipairs(factionCities) do
+        for _, alias in ipairs(cityData.aliases) do
+            if string.find(" " .. cleaned .. " ", " " .. alias .. " ") then
+                if #alias >= 3 or hasIntent or #cleaned <= 12 then
+                    return ns.CITY_LOOKUP[alias], (hasIntent ~= nil or #cleaned <= 12)
+                end
+            end
+        end
+    end
+
+    return nil, false
+end
+
+-- Parse natural-language whispers from non-addon players
 local function ParseWhisperCommand(msg, sender)
     if not ns.state.isMage or not ns.state.mageActive then return end
+    if not sender or sender == "" then return end
 
-    local arg = string.match(strtrim(msg), "^![Tt][Aa][Xx][Ii]%s+(.+)$")
-    if not arg then return end
-
-    local normSender = ns.NormalizeName(sender)
-    local cityData = ns.ResolveCity(arg, true)
-
-    -- Build list of portals this Mage actually knows/offers
-    local enabledCities = ns.GetEnabledMageCities()
-    local validAliases = {}
-    for _, c in ipairs(enabledCities) do
-        table.insert(validAliases, string.format("%s (%s)", c.name, c.aliases[1]))
-    end
-    local offeredStr = (#validAliases > 0) and table.concat(validAliases, ", ") or "None"
-
-    if not cityData then
-        SendChatMessage(
-            "[ForeverTaxi] Unknown city '" .. arg .. "'. Available portals: " .. offeredStr,
-            "WHISPER",
-            nil,
-            normSender
-        )
+    -- Strictly ignore whispers from yourself to prevent echo loops
+    local shortSender = Ambiguate(sender, "short")
+    local myShortName = UnitName("player")
+    if (UnitIsUnit and UnitIsUnit(sender, "player")) or shortSender == myShortName then
         return
     end
+
+    local normSender = ns.NormalizeName(sender)
+    if not normSender then return end
+
+    local lowerMsg = string.lower(strtrim(msg or ""))
+    local cityData, confident = ExtractCityFromWhisper(lowerMsg)
+    if not cityData or not confident then return end
+
+    -- Enforce a 15-second reply cooldown per player
+    local now = GetTime()
+    if lastWhisperReply[normSender] and (now - lastWhisperReply[normSender]) < 15 then
+        return
+    end
+    lastWhisperReply[normSender] = now
+
+    local enabledCities = ns.GetEnabledMageCities()
+    local validExamples = {}
+    for _, c in ipairs(enabledCities) do
+        table.insert(validExamples, string.format("%s ('%s')", c.name, c.aliases[1]))
+    end
+    local offeredStr = (#validExamples > 0) and table.concat(validExamples, ", ") or "None"
 
     if not ns.IsPortalEnabled(cityData.name) then
         SendChatMessage(
-            "[ForeverTaxi] Sorry, I do not have Portal: " .. cityData.name .. " learned yet. Available portals: " .. offeredStr,
+            "Sorry, I don't have Portal: " .. cityData.name .. " learned yet! I can currently port to: " .. offeredStr,
             "WHISPER",
             nil,
             normSender
@@ -244,9 +388,11 @@ local function ParseWhisperCommand(msg, sender)
         return
     end
 
-    UpsertRequest(normSender, cityData, "Whisper Request (Verify Inn)", ns.db.defaultTip or 2, true, "WHISPER")
+    local offeredTip = tonumber(string.match(lowerMsg, "(%d+)%s*g")) or ns.db.defaultTip or 2
+
+    UpsertRequest(normSender, cityData, "Whisper Request (Verify Inn)", offeredTip, true, "WHISPER")
     SendChatMessage(
-        string.format("[ForeverTaxi] Queued your request for %s! Please ensure you are inside an inn.", cityData.name),
+        string.format("Hey! Got you down for a %s portal — make sure you're inside an inn and I'll invite you shortly!", cityData.name),
         "WHISPER",
         nil,
         normSender

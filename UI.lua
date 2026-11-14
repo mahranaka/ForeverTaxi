@@ -12,6 +12,8 @@ local mageListContainer
 -- Mage Tab Widgets
 local toggleActiveBtn, advertBtn, reagentStatusLabel
 local portalCheckboxes = {}
+local channelPool = {}
+local channelBox, addChannelEditBox
 local requestRows = {}
 local emptyQueueLabel
 
@@ -28,6 +30,15 @@ local function ApplyDarkBackdrop(frame, borderAlpha)
     })
     frame:SetBackdropColor(0.07, 0.09, 0.13, 0.96)
     frame:SetBackdropBorderColor(0.25, 0.55, 0.85, borderAlpha or 0.85)
+end
+
+-- Helper: Reliable checkbox with explicit FontString label (avoids template .text nil errors in 1.15+)
+local function CreateLabeledCheckbox(parent, size)
+    local cb = CreateFrame("CheckButton", nil, parent, "UICheckButtonTemplate")
+    cb:SetSize(size or 22, size or 22)
+    cb.label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    cb.label:SetPoint("LEFT", cb, "RIGHT", 2, 0)
+    return cb
 end
 
 -- Switch between Passenger (1) and Mage Dashboard (2) tabs
@@ -83,6 +94,76 @@ local function UpdatePassengerTab()
     end
 end
 
+-- Refresh dynamic channel checkboxes inside the Mage Dashboard
+local function RefreshAdvertChannelsUI()
+    local list = (ns.db and ns.db.advertChannels) or {}
+
+    for i, entry in ipairs(list) do
+        local cb = channelPool[i]
+        if not cb then
+            cb = CreateLabeledCheckbox(channelBox, 20)
+            cb:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+
+            cb:SetScript("OnClick", function(self, button)
+                if button == "RightButton" then
+                    self:SetChecked(self.entry.enabled)
+                    ns.RemoveAdvertChannel(self.entry.name)
+                    ns.UpdateUI()
+                else
+                    self.entry.enabled = self:GetChecked() and true or false
+                    ns.UpdateUI()
+                end
+            end)
+
+            cb:SetScript("OnEnter", function(self)
+                GameTooltip:SetOwner(self, "ANCHOR_TOP")
+                GameTooltip:AddLine("#" .. self.entry.name)
+                if self.joinedId then
+                    GameTooltip:AddLine("|cff55ff55Joined (Channel #" .. self.joinedId .. ")|r", 1, 1, 1)
+                else
+                    GameTooltip:AddLine("|cffffaa00Not currently joined|r (will skip until joined)", 1, 1, 1)
+                end
+                if string.lower(self.entry.name) ~= string.lower(ns.CHANNEL_NAME) then
+                    GameTooltip:AddLine("|cffaaaaaaRight-Click to remove from list|r")
+                end
+                GameTooltip:Show()
+            end)
+            cb:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+            channelPool[i] = cb
+        end
+
+        cb.entry = entry
+        local cId = ns.ResolveJoinedChannelId and ns.ResolveJoinedChannelId(entry.name) or nil
+        cb.joinedId = cId
+
+        local col = (i - 1) % 2
+        local row = math.floor((i - 1) / 2)
+        cb:ClearAllPoints()
+        cb:SetPoint("TOPLEFT", 6 + (col * 204), -6 - (row * 22))
+        cb:SetChecked(entry.enabled)
+
+        local idTag = cId and ("|cff00ccff/" .. cId .. "|r ") or ""
+        if not entry.enabled then
+            cb.label:SetText("|cff888888" .. entry.name .. "|r")
+        elseif cId then
+            cb.label:SetText(idTag .. "|cffffffff" .. entry.name .. "|r")
+        else
+            cb.label:SetText("|cffffaa00" .. entry.name .. " (Offline)|r")
+        end
+
+        if i <= 6 then
+            cb:Show()
+        else
+            cb:Hide()
+        end
+    end
+
+    for j = #list + 1, #channelPool do
+        channelPool[j]:Hide()
+    end
+end
+
 -- Refresh Mage Dashboard Tab UI
 local function UpdateMageTab()
     if not ns.state.isMage then
@@ -104,17 +185,18 @@ local function UpdateMageTab()
         advertBtn:Disable()
     end
 
-    -- Sync portal checkboxes with saved character selection & spellbook status
     for _, cb in ipairs(portalCheckboxes) do
         cb:Enable()
         cb:SetChecked(ns.IsPortalEnabled(cb.cityName))
         local knowsSpell = ns.DoesPlayerKnowSpell(cb.spellID, cb.spellName)
         if knowsSpell then
-            cb.text:SetText("|cffffffff" .. cb.cityName .. "|r")
+            cb.label:SetText("|cffffffff" .. cb.cityName .. "|r")
         else
-            cb.text:SetText("|cff888888" .. cb.cityName .. " (Unlearned)|r")
+            cb.label:SetText("|cff888888" .. cb.cityName .. " (Unlearned)|r")
         end
     end
+
+    RefreshAdvertChannelsUI()
 
     local scrolls, runes = ns.GetMageReagentCounts()
     reagentStatusLabel:SetText(string.format(
@@ -122,7 +204,6 @@ local function UpdateMageTab()
         scrolls, runes
     ))
 
-    -- Collect and sort incoming requests by timestamp (oldest first), filtered by enabled portals
     local sorted = {}
     for _, req in pairs(ns.state.requests) do
         if ns.IsPortalEnabled(req.city) then
@@ -246,10 +327,10 @@ local function CreatePassengerTab(parent)
     activeReqLabel = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     activeReqLabel:SetPoint("TOPLEFT", 18, -206)
 
-    local autoInviteCB = CreateFrame("CheckButton", nil, tab1Frame, "UICheckButtonTemplate")
+    local autoInviteCB = CreateLabeledCheckbox(tab1Frame, 22)
     autoInviteCB:SetPoint("TOPLEFT", 14, -228)
     autoInviteCB:SetChecked(ns.db.autoAcceptInvite)
-    autoInviteCB.text:SetText("Auto-accept party invite from claimed Taxi Mage")
+    autoInviteCB.label:SetText("Auto-accept party invite from claimed Taxi Mage")
     autoInviteCB:SetScript("OnClick", function(self)
         ns.db.autoAcceptInvite = self:GetChecked() and true or false
     end)
@@ -259,7 +340,7 @@ local function CreatePassengerTab(parent)
     mageHeader:SetText("Active Taxi Mages Online:")
 
     mageListContainer = CreateFrame("Frame", nil, tab1Frame, "BackdropTemplate")
-    mageListContainer:SetSize(424, 150)
+    mageListContainer:SetSize(424, 240)
     mageListContainer:SetPoint("TOPLEFT", 18, -285)
     ApplyDarkBackdrop(mageListContainer, 0.5)
 
@@ -288,24 +369,31 @@ local function CreateMageTab(parent)
     advertBtn:SetScript("OnClick", function()
         ns.MageBroadcastAdvert()
     end)
+    advertBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Post Taxi Advertisement")
+        GameTooltip:AddLine("|cffffffffClick:|r Pre-fill next checked & active channel below.", 0.8, 0.8, 0.8)
+        GameTooltip:AddLine("|cffffffffEnter:|r Submit message in chat.", 0.8, 0.8, 0.8)
+        GameTooltip:Show()
+    end)
+    advertBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     reagentStatusLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     reagentStatusLabel:SetPoint("TOPLEFT", 18, -82)
 
     -- Learned / Offered Portals Selector Box
     local portalHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    portalHeader:SetPoint("TOPLEFT", 18, -102)
+    portalHeader:SetPoint("TOPLEFT", 18, -100)
     portalHeader:SetText("Learned / Offered Portals:")
 
     local cities = ns.CITIES[ns.state.faction] or {}
     for idx, cityData in ipairs(cities) do
-        local cb = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
-        cb:SetSize(22, 22)
-        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -116)
+        local cb = CreateLabeledCheckbox(tab2Frame, 22)
+        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -114)
         cb.cityName = cityData.name
         cb.spellName = cityData.spell
         cb.spellID = cityData.spellID
-        cb.text:SetText(cityData.name)
+        cb.label:SetText(cityData.name)
         cb:SetScript("OnClick", function(self)
             ns.SetPortalEnabled(self.cityName, self:GetChecked())
             ns.UpdateUI()
@@ -313,14 +401,52 @@ local function CreateMageTab(parent)
         table.insert(portalCheckboxes, cb)
     end
 
+    -- Advertise Channels Selector + Add Field
+    local chanHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    chanHeader:SetPoint("TOPLEFT", 18, -142)
+    chanHeader:SetText("Advertise Channels:")
+
+    addChannelEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
+    addChannelEditBox:SetSize(135, 20)
+    addChannelEditBox:SetPoint("TOPLEFT", 248, -138)
+    addChannelEditBox:SetAutoFocus(false)
+    addChannelEditBox:SetMaxLetters(32)
+    addChannelEditBox:SetScript("OnEnterPressed", function(self)
+        if ns.AddAdvertChannel(self:GetText()) then
+            self:SetText("")
+            self:ClearFocus()
+            ns.UpdateUI()
+        end
+    end)
+    addChannelEditBox:SetScript("OnEscapePressed", function(self)
+        self:ClearFocus()
+    end)
+
+    local addChanBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    addChanBtn:SetSize(52, 22)
+    addChanBtn:SetPoint("LEFT", addChannelEditBox, "RIGHT", 4, 0)
+    addChanBtn:SetText("Add")
+    addChanBtn:SetScript("OnClick", function()
+        if ns.AddAdvertChannel(addChannelEditBox:GetText()) then
+            addChannelEditBox:SetText("")
+            addChannelEditBox:ClearFocus()
+            ns.UpdateUI()
+        end
+    end)
+
+    channelBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
+    channelBox:SetSize(424, 76)
+    channelBox:SetPoint("TOPLEFT", 18, -162)
+    ApplyDarkBackdrop(channelBox, 0.45)
+
     -- Request Queue List Container
     local queueHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    queueHeader:SetPoint("TOPLEFT", 18, -148)
+    queueHeader:SetPoint("TOPLEFT", 18, -246)
     queueHeader:SetText("Incoming Passenger Requests:")
 
     local queueBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
     queueBox:SetSize(424, 228)
-    queueBox:SetPoint("TOPLEFT", 18, -166)
+    queueBox:SetPoint("TOPLEFT", 18, -264)
     ApplyDarkBackdrop(queueBox, 0.5)
 
     emptyQueueLabel = queueBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -357,18 +483,18 @@ local function CreateMageTab(parent)
     end
 
     -- Bottom Settings Checkboxes
-    local filterCB = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
-    filterCB:SetPoint("TOPLEFT", 14, -402)
+    local filterCB = CreateLabeledCheckbox(tab2Frame, 22)
+    filterCB:SetPoint("TOPLEFT", 14, -498)
     filterCB:SetChecked(ns.db.filterChatSpam)
-    filterCB.text:SetText("Hide [FT:...] protocol tags in chat")
+    filterCB.label:SetText("Hide [FT:...] protocol tags in chat")
     filterCB:SetScript("OnClick", function(self)
         ns.db.filterChatSpam = self:GetChecked() and true or false
     end)
 
-    local soundCB = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
-    soundCB:SetPoint("TOPLEFT", 240, -402)
+    local soundCB = CreateLabeledCheckbox(tab2Frame, 22)
+    soundCB:SetPoint("TOPLEFT", 240, -498)
     soundCB:SetChecked(ns.db.soundAlert)
-    soundCB.text:SetText("Sound alert on new request")
+    soundCB.label:SetText("Sound alert on new request")
     soundCB:SetScript("OnClick", function(self)
         ns.db.soundAlert = self:GetChecked() and true or false
     end)
@@ -397,6 +523,7 @@ local function CreateMinimapButton()
         local angle = math.rad(ns.db.minimapAngle or 220)
         local x = math.cos(angle) * 80
         local y = math.sin(angle) * 80
+        minimapBtn:ClearAllPoints()
         minimapBtn:SetPoint("CENTER", Minimap, "CENTER", x, y)
     end
 
@@ -439,11 +566,12 @@ local function CreateMinimapButton()
     end)
 
     UpdatePosition()
+    minimapBtn:Show()
 end
 
 function ns.InitUI()
     mainFrame = CreateFrame("Frame", "ForeverTaxiMainFrame", UIParent, "BackdropTemplate")
-    mainFrame:SetSize(460, 450)
+    mainFrame:SetSize(460, 540)
     mainFrame:SetPoint("CENTER")
     ApplyDarkBackdrop(mainFrame, 0.9)
 

@@ -5,6 +5,27 @@ local inviteBtn, scrollBtn, portalBtn, clearBtn
 local customerText, locationText, destText, statusText, reagentText
 local pendingPortalSpell = nil
 
+-- Scan player bags to find the exact Item ID of Scroll of Liminal Passage
+local function FindLiminalScrollItemString()
+    local targetName = "Scroll of Liminal Passage"
+    if C_Container and C_Container.GetContainerNumSlots and C_Container.GetContainerItemInfo then
+        for bag = 0, 4 do
+            local numSlots = C_Container.GetContainerNumSlots(bag) or 0
+            for slot = 1, numSlots do
+                local info = C_Container.GetContainerItemInfo(bag, slot)
+                if info and info.itemID then
+                    local name = GetItemInfo(info.itemID)
+                    if name == targetName then
+                        return "item:" .. tostring(info.itemID), info.itemID
+                    end
+                end
+            end
+        end
+    end
+    -- Fallback to item name if not yet cached
+    return targetName, nil
+end
+
 -- Safely update secure button attributes outside of combat lockdown
 local function ApplySecureAttributes()
     if not hudFrame or not ns.state.activeJob then return end
@@ -15,14 +36,21 @@ local function ApplySecureAttributes()
         return
     end
 
-    -- 1. Scroll of Liminal Passage button
+    -- 1. Scroll of Liminal Passage button (prefer exact "item:<ID>" from bags)
+    local itemAttr = FindLiminalScrollItemString()
     scrollBtn:SetAttribute("type", "item")
-    scrollBtn:SetAttribute("item", "Scroll of Liminal Passage")
+    scrollBtn:SetAttribute("type1", "item")
+    scrollBtn:SetAttribute("item", itemAttr)
+    scrollBtn:SetAttribute("item1", itemAttr)
 
     -- 2. Dynamic Portal Spell button
+    local spellName = ns.state.activeJob.spell
     portalBtn:SetAttribute("type", "spell")
-    portalBtn:SetAttribute("spell", ns.state.activeJob.spell)
-    portalBtn:SetText("Cast " .. ns.state.activeJob.spell)
+    portalBtn:SetAttribute("type1", "spell")
+    portalBtn:SetAttribute("spell", spellName)
+    portalBtn:SetAttribute("spell1", spellName)
+    portalBtn:SetText("Cast " .. spellName)
+
     pendingPortalSpell = nil
 end
 
@@ -39,7 +67,8 @@ function ns.UpdateSecureHUD()
     destText:SetText("|cffffffffDestination:|r |cff55ff55" .. job.city .. "|r")
 
     -- Check group & rested status
-    local inGroup = UnitInParty(job.customer) or UnitInRaid(job.customer)
+    local shortName = Ambiguate(job.customer, "short")
+    local inGroup = UnitInParty(job.customer) or UnitInParty(shortName) or UnitInRaid(job.customer) or UnitInRaid(shortName)
     if inGroup then
         inviteBtn:SetText("In Party")
         inviteBtn:Disable()
@@ -133,15 +162,20 @@ function ns.InitSecureHUD()
     reagentText = hudFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     reagentText:SetPoint("TOPLEFT", 14, -91)
 
-    -- Button 1: Invite Customer (Standard Button)
+    -- Button 1: Invite Customer (uses 1.15+ C_PartyInfo.InviteUnit)
     inviteBtn = CreateFrame("Button", nil, hudFrame, "UIPanelButtonTemplate")
     inviteBtn:SetSize(250, 24)
     inviteBtn:SetPoint("TOP", 0, -110)
     inviteBtn:SetText("Invite Customer")
     inviteBtn:SetScript("OnClick", function()
         local job = ns.state.activeJob
-        if not job then return end
-        InviteUnit(job.customer)
+        if not job or not job.customer then return end
+        if C_PartyInfo and C_PartyInfo.InviteUnit then
+            C_PartyInfo.InviteUnit(job.customer)
+        elseif InviteUnit then
+            InviteUnit(job.customer)
+        end
+        ns.Print("Sent party invite to |cffffffff" .. job.customer .. "|r.")
         ns.UpdateSecureHUD()
     end)
 
@@ -150,8 +184,9 @@ function ns.InitSecureHUD()
     scrollBtn:SetSize(250, 24)
     scrollBtn:SetPoint("TOP", 0, -137)
     scrollBtn:SetText("Use Scroll of Liminal Passage")
-    scrollBtn:RegisterForClicks("AnyUp")
+    scrollBtn:RegisterForClicks("AnyDown", "AnyUp")
     scrollBtn:SetAttribute("type", "item")
+    scrollBtn:SetAttribute("type1", "item")
     scrollBtn:SetAttribute("item", "Scroll of Liminal Passage")
     scrollBtn:HookScript("PreClick", function()
         local scrolls = ns.GetMageReagentCounts()
@@ -167,7 +202,7 @@ function ns.InitSecureHUD()
     portalBtn:SetSize(250, 24)
     portalBtn:SetPoint("TOP", 0, -164)
     portalBtn:SetText("Cast Portal")
-    portalBtn:RegisterForClicks("AnyUp")
+    portalBtn:RegisterForClicks("AnyDown", "AnyUp")
     portalBtn:HookScript("PreClick", function()
         local _, runes = ns.GetMageReagentCounts()
         if runes == 0 then
@@ -175,12 +210,21 @@ function ns.InitSecureHUD()
         end
     end)
 
-    -- Button 4: Complete / Clear Job
+    -- Button 4: Complete / Clear Job (whispers thank-you to customer and clears HUD)
     clearBtn = CreateFrame("Button", nil, hudFrame, "UIPanelButtonTemplate")
     clearBtn:SetSize(250, 20)
     clearBtn:SetPoint("TOP", 0, -190)
     clearBtn:SetText("Complete / Clear Job")
     clearBtn:SetScript("OnClick", function()
+        local job = ns.state.activeJob
+        if job and job.customer and job.customer ~= "TestRider" then
+            SendChatMessage(
+                string.format("Thanks for riding ForeverTaxi! Enjoy %s and safe travels!", job.city),
+                "WHISPER",
+                nil,
+                job.customer
+            )
+        end
         ns.state.activeJob = nil
         ns.Print("Job completed and cleared.")
         ns.HideSecureHUD()

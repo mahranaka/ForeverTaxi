@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Initialize shared namespace
 ns.name = addonName
-ns.version = "1.0.2"
+ns.version = "1.2.0"
 ns.CHANNEL_NAME = "ForeverTaxi"
 ns.ADDON_PREFIX = "FTAXI"
 ns.REQUEST_TTL = 180 -- Seconds before a taxi request expires
@@ -17,6 +17,7 @@ ns.state = {
     activeMages = {},    -- Keyed by Ambiguate(sender, "none")
     activeJob = nil,     -- Mage's current accepted customer table
     myRequest = nil,     -- Passenger's current outgoing request table
+    advertCycleIdx = 0,  -- Tracks round-robin index across selected advert channels
 }
 
 -- SavedVariables defaults
@@ -28,6 +29,11 @@ local defaults = {
     minimapAngle = 220,
     hudPos = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 180 },
     knownPortals = {},   -- Keyed by "PlayerName-Realm" -> { ["Orgrimmar"] = true, ... }
+    advertChannels = {   -- Ordered list of { name = "ChannelName", enabled = bool }
+        { name = "ForeverTaxi", enabled = true },
+        { name = "Trade",       enabled = true },
+        { name = "General",     enabled = true },
+    },
 }
 
 -- Faction city definitions, spell IDs (Classic Era), and aliases
@@ -140,6 +146,44 @@ function ns.GetEnabledMageCities()
     return result
 end
 
+-- Utility: Add a channel to the advert list (deduplicated case-insensitively)
+function ns.AddAdvertChannel(channelName)
+    if not ns.db then return false end
+    local clean = strtrim(channelName or "")
+    -- Strip leading #, /, or channel number prefixes if entered
+    clean = string.gsub(clean, "^[#/%d%.%s]+", "")
+    if clean == "" then return false end
+
+    ns.db.advertChannels = ns.db.advertChannels or {}
+    for _, entry in ipairs(ns.db.advertChannels) do
+        if string.lower(entry.name) == string.lower(clean) then
+            entry.enabled = true
+            ns.Print("Channel |cffffffff#" .. entry.name .. "|r is already in the list (enabled).")
+            return true
+        end
+    end
+
+    table.insert(ns.db.advertChannels, { name = clean, enabled = true })
+    ns.Print("Added |cffffffff#" .. clean .. "|r to advert channels.")
+    return true
+end
+
+-- Utility: Remove a custom channel from the advert list (keeps ForeverTaxi core channel)
+function ns.RemoveAdvertChannel(channelName)
+    if not ns.db or not ns.db.advertChannels then return end
+    if string.lower(channelName) == string.lower(ns.CHANNEL_NAME) then
+        ns.Print("|cffffaa00Cannot remove the core #ForeverTaxi channel (you can uncheck it instead).|r")
+        return
+    end
+    for i, entry in ipairs(ns.db.advertChannels) do
+        if string.lower(entry.name) == string.lower(channelName) then
+            table.remove(ns.db.advertChannels, i)
+            ns.Print("Removed |cffffffff#" .. entry.name .. "|r from advert channels.")
+            return
+        end
+    end
+end
+
 -- Utility: Get formatted current location
 function ns.GetCurrentLocation()
     local zone = GetZoneText() or "Unknown"
@@ -195,7 +239,7 @@ function ns.SetMageActive(active)
 
         ns.EnsureChannelJoined()
         ns.state.mageActive = true
-        ns.Print("|cff55ff55Mage Taxi mode ENABLED.|r Listening for requests in channel and whispers (!taxi <city>).")
+        ns.Print("|cff55ff55Mage Taxi mode ENABLED.|r Listening for requests in channel and whispers (e.g. 'org', 'uc', 'taxi org').")
     else
         ns.state.mageActive = false
         ns.Print("|cffffaa00Mage Taxi mode DISABLED.|r")
@@ -212,6 +256,7 @@ coreFrame:RegisterEvent("SPELLS_CHANGED")
 coreFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
 coreFrame:RegisterEvent("PARTY_INVITE_REQUEST")
 coreFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
+coreFrame:RegisterEvent("CHANNEL_UI_UPDATE")
 
 coreFrame:SetScript("OnEvent", function(_, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
@@ -244,6 +289,9 @@ coreFrame:SetScript("OnEvent", function(_, event, arg1)
             ns.SyncKnownPortals(false)
             if ns.UpdateUI then ns.UpdateUI() end
         end
+
+    elseif event == "CHANNEL_UI_UPDATE" then
+        if ns.UpdateUI then ns.UpdateUI() end
 
     elseif event == "PLAYER_UPDATE_RESTING" then
         local nowResting = IsResting() and true or false
@@ -308,6 +356,11 @@ SlashCmdList["FOREVERTAXI"] = function(msg)
     elseif cmd == "join" then
         ns.EnsureChannelJoined(true)
 
+    elseif cmd == "test" then
+        if ns.InjectTestRequest then
+            ns.InjectTestRequest()
+        end
+
     elseif cmd == "status" then
         local restStr = ns.state.isResting and "|cff55ff55Inside Inn|r" or "|cffff5555Outside Inn|r"
         local modeStr = ns.state.mageActive and "|cff55ff55Active Mage|r" or "|cffaaaaaaStandby|r"
@@ -318,6 +371,6 @@ SlashCmdList["FOREVERTAXI"] = function(msg)
         end
 
     else
-        ns.Print("Commands: |cff00ccff/taxi|r (Toggle UI), |cff00ccff/taxi active|r, |cff00ccff/taxi off|r, |cff00ccff/taxi join|r, |cff00ccff/taxi status|r")
+        ns.Print("Commands: |cff00ccff/taxi|r (Toggle UI), |cff00ccff/taxi active|r, |cff00ccff/taxi off|r, |cff00ccff/taxi join|r, |cff00ccff/taxi test|r, |cff00ccff/taxi status|r")
     end
 end
