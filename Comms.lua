@@ -1,6 +1,6 @@
 local _, ns = ...
 
--- Ensure the ForeverTaxi channel is joined (must be called from user interaction / slash cmd)
+-- Ensure the ForeverTaxi channel is joined
 function ns.EnsureChannelJoined(verbose)
     local id = GetChannelName(ns.CHANNEL_NAME)
     if id and id > 0 then
@@ -38,7 +38,7 @@ function ns.SendAddonWhisper(target, payload)
     C_ChatInfo.SendAddonMessage(ns.ADDON_PREFIX, payload, "WHISPER", target)
 end
 
--- Passenger: Broadcast a portal request (called via button click)
+-- Passenger: Broadcast a portal request
 function ns.PassengerBroadcastRequest(cityName, tipAmount)
     local cityData = ns.ResolveCity(cityName, true)
     if not cityData then
@@ -52,7 +52,6 @@ function ns.PassengerBroadcastRequest(cityName, tipAmount)
     local location = ns.GetCurrentLocation()
     local restTag = IsResting() and "RESTED" or "NOT_RESTED"
 
-    -- Format: [FT:REQ] Orgrimmar | Brill (Gallows' End Tavern) | 2g | RESTED
     local msg = string.format("[FT:REQ] %s | %s | %dg | %s", cityData.name, location, tip, restTag)
     if ns.BroadcastToChannel(msg) then
         ns.state.myRequest = {
@@ -87,18 +86,23 @@ function ns.SendRestStatus(mageName, isResting)
     ns.SendAddonWhisper(mageName, "REST_STATUS:" .. (isResting and "1" or "0"))
 end
 
--- Mage: Broadcast active taxi advertisement (called via button click)
+-- Mage: Broadcast active taxi advertisement (only lists selected/learned portals)
 function ns.MageBroadcastAdvert()
     if not ns.state.isMage then return end
-    local cities = ns.CITIES[ns.state.faction] or {}
+    local enabledCities = ns.GetEnabledMageCities()
+    if #enabledCities == 0 then
+        ns.Print("|cffff5555Select at least one learned portal city before posting an advert.|r")
+        return
+    end
+
     local names = {}
-    for _, c in ipairs(cities) do
+    for _, c in ipairs(enabledCities) do
         table.insert(names, c.name)
     end
     local cityList = table.concat(names, ", ")
-    local msg = string.format("[FT:MAGE] Active | Cities: %s | Whisper '!taxi <city>' or use ForeverTaxi addon!", cityList)
+    local msg = string.format("[FT:MAGE] Active | Cities: %s | Whisper '!taxi <city>' or use ForeverTaxi!", cityList)
     if ns.BroadcastToChannel(msg) then
-        ns.Print("Posted Mage Taxi advertisement to #" .. ns.CHANNEL_NAME .. ".")
+        ns.Print("Posted Mage Taxi advertisement to #" .. ns.CHANNEL_NAME .. " (" .. cityList .. ").")
     end
 end
 
@@ -115,7 +119,6 @@ function ns.MageAcceptRequest(customerName)
         return
     end
 
-    -- Lock locally and send silent CLAIM handshake to customer
     ns.state.activeJob = {
         customer = req.sender,
         city = req.city,
@@ -124,17 +127,15 @@ function ns.MageAcceptRequest(customerName)
         tip = req.tip,
         isResting = req.isResting,
         source = req.source,
-        confirmed = (req.source == "WHISPER"), -- Non-addon whisperers don't send ACK
+        confirmed = (req.source == "WHISPER"),
     }
 
-    -- Remove from open queue
     ns.state.requests[customerName] = nil
 
     if req.source == "CHANNEL" then
         ns.SendAddonWhisper(req.sender, "CLAIM:" .. req.city)
     end
 
-    -- Send polite confirmation whisper so both addon and non-addon users know
     SendChatMessage(
         string.format("[ForeverTaxi] Accepted your portal request to %s! Make sure you are inside an inn so I can port to you.", req.city),
         "WHISPER",
@@ -150,6 +151,11 @@ end
 local function UpsertRequest(sender, cityData, location, tip, isResting, source)
     local normSender = ns.NormalizeName(sender)
     if not normSender or normSender == ns.NormalizeName(UnitName("player")) then return end
+
+    -- Only queue requests for portals this Mage has enabled
+    if ns.state.isMage and not ns.IsPortalEnabled(cityData.name) then
+        return
+    end
 
     local isNew = (ns.state.requests[normSender] == nil)
     ns.state.requests[normSender] = {
@@ -175,7 +181,6 @@ local function ParseChannelMessage(msg, sender)
     local normSender = ns.NormalizeName(sender)
     if not normSender then return end
 
-    -- 1. Passenger Request: [FT:REQ] Orgrimmar | Brill (Inn) | 2g | RESTED
     local reqBody = string.match(msg, "^%[FT:REQ%]%s*(.+)$")
     if reqBody then
         local cityPart, locPart, tipPart, restPart = strsplit("|", reqBody)
@@ -189,7 +194,6 @@ local function ParseChannelMessage(msg, sender)
         return
     end
 
-    -- 2. Mage Advertisement: [FT:MAGE] Active | ...
     local mageBody = string.match(msg, "^%[FT:MAGE%]%s*(.+)$")
     if mageBody then
         ns.state.activeMages[normSender] = {
@@ -211,13 +215,28 @@ local function ParseWhisperCommand(msg, sender)
 
     local normSender = ns.NormalizeName(sender)
     local cityData = ns.ResolveCity(arg, true)
+
+    -- Build list of portals this Mage actually knows/offers
+    local enabledCities = ns.GetEnabledMageCities()
+    local validAliases = {}
+    for _, c in ipairs(enabledCities) do
+        table.insert(validAliases, string.format("%s (%s)", c.name, c.aliases[1]))
+    end
+    local offeredStr = (#validAliases > 0) and table.concat(validAliases, ", ") or "None"
+
     if not cityData then
-        local validList = {}
-        for _, c in ipairs(ns.CITIES[ns.state.faction] or {}) do
-            table.insert(validList, c.aliases[1])
-        end
         SendChatMessage(
-            "[ForeverTaxi] Unknown city '" .. arg .. "'. Valid options: " .. table.concat(validList, ", "),
+            "[ForeverTaxi] Unknown city '" .. arg .. "'. Available portals: " .. offeredStr,
+            "WHISPER",
+            nil,
+            normSender
+        )
+        return
+    end
+
+    if not ns.IsPortalEnabled(cityData.name) then
+        SendChatMessage(
+            "[ForeverTaxi] Sorry, I do not have Portal: " .. cityData.name .. " learned yet. Available portals: " .. offeredStr,
             "WHISPER",
             nil,
             normSender
@@ -242,24 +261,20 @@ local function HandleAddonMessage(prefix, msg, dist, sender)
 
     local cmd, arg = strsplit(":", msg, 2)
 
-    -- Passenger receives CLAIM from a Mage
     if cmd == "CLAIM" then
         if ns.state.myRequest then
             if not ns.state.myRequest.claimedBy then
-                -- First mage wins the race condition
                 ns.state.myRequest.claimedBy = normSender
                 ns.SendAddonWhisper(normSender, "ACK:" .. (IsResting() and "1" or "0"))
                 ns.Print("|cff55ff55Mage " .. normSender .. "|r claimed your taxi to |cff00ccff" .. ns.state.myRequest.city .. "|r! Expect a party invite shortly.")
                 if ns.UpdateUI then ns.UpdateUI() end
             elseif ns.state.myRequest.claimedBy ~= normSender then
-                -- Tell competing mages the job is already taken
                 ns.SendAddonWhisper(normSender, "CLAIMED_BY_OTHER:" .. ns.state.myRequest.claimedBy)
             end
         else
             ns.SendAddonWhisper(normSender, "CANCEL")
         end
 
-    -- Mage receives ACK from Passenger
     elseif cmd == "ACK" then
         if ns.state.activeJob and ns.state.activeJob.customer == normSender then
             ns.state.activeJob.confirmed = true
@@ -268,7 +283,6 @@ local function HandleAddonMessage(prefix, msg, dist, sender)
             if ns.UpdateSecureHUD then ns.UpdateSecureHUD() end
         end
 
-    -- Mage learns another Mage claimed the customer milliseconds earlier
     elseif cmd == "CLAIMED_BY_OTHER" then
         if ns.state.activeJob and ns.state.activeJob.customer == normSender then
             ns.Print("|cffffaa00Job taken:|r " .. normSender .. " was already claimed by |cffffffff" .. (arg or "another Mage") .. "|r.")
@@ -278,7 +292,6 @@ local function HandleAddonMessage(prefix, msg, dist, sender)
         ns.state.requests[normSender] = nil
         if ns.UpdateUI then ns.UpdateUI() end
 
-    -- Customer updated their rested status while waiting
     elseif cmd == "REST_STATUS" then
         local rested = (arg == "1")
         if ns.state.activeJob and ns.state.activeJob.customer == normSender then
@@ -295,7 +308,6 @@ local function HandleAddonMessage(prefix, msg, dist, sender)
             if ns.UpdateUI then ns.UpdateUI() end
         end
 
-    -- Customer cancelled their request
     elseif cmd == "CANCEL" then
         if ns.state.activeJob and ns.state.activeJob.customer == normSender then
             ns.Print("|cffffaa00" .. normSender .. " cancelled their taxi request.|r")
@@ -320,7 +332,7 @@ local function ChatSpamFilter(_, _, msg, _, _, _, _, _, _, _, channelName)
     return false
 end
 
--- Periodic TTL Sweep (cleans expired requests & stale mages every 5 seconds)
+-- Periodic TTL Sweep
 local sweepElapsed = 0
 local commsFrame = CreateFrame("Frame")
 commsFrame:RegisterEvent("CHAT_MSG_CHANNEL")
@@ -360,7 +372,7 @@ commsFrame:SetScript("OnUpdate", function(_, elapsed)
     end
 
     for k, mage in pairs(ns.state.activeMages) do
-        if (now - mage.timestamp) > 600 then -- 10 min TTL for mage adverts
+        if (now - mage.timestamp) > 600 then
             ns.state.activeMages[k] = nil
             changed = true
         end

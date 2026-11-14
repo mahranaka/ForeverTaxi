@@ -11,6 +11,7 @@ local mageListContainer
 
 -- Mage Tab Widgets
 local toggleActiveBtn, advertBtn, reagentStatusLabel
+local portalCheckboxes = {}
 local requestRows = {}
 local emptyQueueLabel
 
@@ -51,11 +52,10 @@ local function UpdatePassengerTab()
 
     if IsResting() then
         restWarnLabel:SetText("|cff55ff55Inn Status: Rested (Eligible for Liminal Passage)|r")
-        broadcastBtn:Enable()
     else
         restWarnLabel:SetText("|cffff5555Inn Status: NOT Rested! Enter an inn before requesting.|r")
-        broadcastBtn:Enable() -- Allow broadcast with warning in case player is walking into inn
     end
+    broadcastBtn:Enable()
 
     if ns.state.myRequest then
         local req = ns.state.myRequest
@@ -70,7 +70,6 @@ local function UpdatePassengerTab()
         cancelReqBtn:Hide()
     end
 
-    -- Populate Active Mages list
     local lines = {}
     for name, data in pairs(ns.state.activeMages) do
         local age = math.floor(GetTime() - data.timestamp)
@@ -90,6 +89,9 @@ local function UpdateMageTab()
         toggleActiveBtn:Disable()
         advertBtn:Disable()
         reagentStatusLabel:SetText("|cffff5555Mage Dashboard is only available on Mage characters.|r")
+        for _, cb in ipairs(portalCheckboxes) do
+            cb:Disable()
+        end
         return
     end
 
@@ -102,16 +104,30 @@ local function UpdateMageTab()
         advertBtn:Disable()
     end
 
+    -- Sync portal checkboxes with saved character selection & spellbook status
+    for _, cb in ipairs(portalCheckboxes) do
+        cb:Enable()
+        cb:SetChecked(ns.IsPortalEnabled(cb.cityName))
+        local knowsSpell = (cb.spellID and IsSpellKnown(cb.spellID)) or (GetSpellInfo(cb.spellName) ~= nil)
+        if knowsSpell then
+            cb.text:SetText("|cffffffff" .. cb.cityName .. "|r")
+        else
+            cb.text:SetText("|cff888888" .. cb.cityName .. " (Unlearned)|r")
+        end
+    end
+
     local scrolls, runes = ns.GetMageReagentCounts()
     reagentStatusLabel:SetText(string.format(
         "Reagents: |cffffffff%d|r Scrolls of Liminal Passage  |  |cffffffff%d|r Runes of Portals",
         scrolls, runes
     ))
 
-    -- Collect and sort incoming requests by timestamp (oldest first)
+    -- Collect and sort incoming requests by timestamp (oldest first), filtered by enabled portals
     local sorted = {}
     for _, req in pairs(ns.state.requests) do
-        table.insert(sorted, req)
+        if ns.IsPortalEnabled(req.city) then
+            table.insert(sorted, req)
+        end
     end
     table.sort(sorted, function(a, b) return a.timestamp < b.timestamp end)
 
@@ -170,7 +186,6 @@ local function CreatePassengerTab(parent)
     cityTitle:SetPoint("TOPLEFT", 18, -55)
     cityTitle:SetText("Destination City:")
 
-    -- Native UIDropDownMenu for faction cities
     cityDropdown = CreateFrame("Frame", "ForeverTaxiCityDropdown", tab1Frame, "UIDropDownMenuTemplate")
     cityDropdown:SetPoint("TOPLEFT", 125, -48)
     UIDropDownMenu_SetWidth(cityDropdown, 150)
@@ -189,7 +204,6 @@ local function CreatePassengerTab(parent)
         end
     end)
 
-    -- Tip Input
     local tipTitle = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     tipTitle:SetPoint("TOPLEFT", 18, -92)
     tipTitle:SetText("Tip Offer (Gold):")
@@ -205,14 +219,12 @@ local function CreatePassengerTab(parent)
         if val then ns.db.defaultTip = val end
     end)
 
-    -- Location & Rested Status
     locLabel = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     locLabel:SetPoint("TOPLEFT", 18, -125)
 
     restWarnLabel = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     restWarnLabel:SetPoint("TOPLEFT", 18, -143)
 
-    -- Broadcast Request Button (Hardware click -> SendChatMessage)
     broadcastBtn = CreateFrame("Button", nil, tab1Frame, "UIPanelButtonTemplate")
     broadcastBtn:SetSize(210, 28)
     broadcastBtn:SetPoint("TOPLEFT", 18, -170)
@@ -222,7 +234,6 @@ local function CreatePassengerTab(parent)
         ns.PassengerBroadcastRequest(selectedCity, tipEditBox:GetText())
     end)
 
-    -- Cancel Request Button
     cancelReqBtn = CreateFrame("Button", nil, tab1Frame, "UIPanelButtonTemplate")
     cancelReqBtn:SetSize(110, 28)
     cancelReqBtn:SetPoint("LEFT", broadcastBtn, "RIGHT", 10, 0)
@@ -232,11 +243,9 @@ local function CreatePassengerTab(parent)
     end)
     cancelReqBtn:Hide()
 
-    -- Active Request Status
     activeReqLabel = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     activeReqLabel:SetPoint("TOPLEFT", 18, -206)
 
-    -- Auto-Accept Invite Checkbox
     local autoInviteCB = CreateFrame("CheckButton", nil, tab1Frame, "UICheckButtonTemplate")
     autoInviteCB:SetPoint("TOPLEFT", 14, -228)
     autoInviteCB:SetChecked(ns.db.autoAcceptInvite)
@@ -245,13 +254,12 @@ local function CreatePassengerTab(parent)
         ns.db.autoAcceptInvite = self:GetChecked() and true or false
     end)
 
-    -- Active Mages Box
     local mageHeader = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
     mageHeader:SetPoint("TOPLEFT", 18, -265)
     mageHeader:SetText("Active Taxi Mages Online:")
 
     mageListContainer = CreateFrame("Frame", nil, tab1Frame, "BackdropTemplate")
-    mageListContainer:SetSize(424, 115)
+    mageListContainer:SetSize(424, 150)
     mageListContainer:SetPoint("TOPLEFT", 18, -285)
     ApplyDarkBackdrop(mageListContainer, 0.5)
 
@@ -268,7 +276,7 @@ local function CreateMageTab(parent)
 
     toggleActiveBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
     toggleActiveBtn:SetSize(245, 28)
-    toggleActiveBtn:SetPoint("TOPLEFT", 18, -50)
+    toggleActiveBtn:SetPoint("TOPLEFT", 18, -48)
     toggleActiveBtn:SetScript("OnClick", function()
         ns.SetMageActive(not ns.state.mageActive)
     end)
@@ -282,23 +290,44 @@ local function CreateMageTab(parent)
     end)
 
     reagentStatusLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    reagentStatusLabel:SetPoint("TOPLEFT", 18, -86)
+    reagentStatusLabel:SetPoint("TOPLEFT", 18, -82)
+
+    -- Learned / Offered Portals Selector Box
+    local portalHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    portalHeader:SetPoint("TOPLEFT", 18, -102)
+    portalHeader:SetText("Learned / Offered Portals:")
+
+    local cities = ns.CITIES[ns.state.faction] or {}
+    for idx, cityData in ipairs(cities) do
+        local cb = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
+        cb:SetSize(22, 22)
+        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -116)
+        cb.cityName = cityData.name
+        cb.spellName = cityData.spell
+        cb.spellID = cityData.spellID
+        cb.text:SetText(cityData.name)
+        cb:SetScript("OnClick", function(self)
+            ns.SetPortalEnabled(self.cityName, self:GetChecked())
+            ns.UpdateUI()
+        end)
+        table.insert(portalCheckboxes, cb)
+    end
 
     -- Request Queue List Container
     local queueHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    queueHeader:SetPoint("TOPLEFT", 18, -110)
+    queueHeader:SetPoint("TOPLEFT", 18, -148)
     queueHeader:SetText("Incoming Passenger Requests:")
 
     local queueBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
-    queueBox:SetSize(424, 230)
-    queueBox:SetPoint("TOPLEFT", 18, -128)
+    queueBox:SetSize(424, 228)
+    queueBox:SetPoint("TOPLEFT", 18, -166)
     ApplyDarkBackdrop(queueBox, 0.5)
 
     emptyQueueLabel = queueBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     emptyQueueLabel:SetPoint("CENTER")
-    emptyQueueLabel:SetText("|cff888888No pending taxi requests. Click 'Post Channel Advert' to attract riders.|r")
+    emptyQueueLabel:SetWidth(380)
+    emptyQueueLabel:SetText("|cff888888No pending taxi requests for your selected portals.|r")
 
-    -- Create 5 fixed rows for live requests
     for i = 1, 5 do
         local row = CreateFrame("Frame", nil, queueBox, "BackdropTemplate")
         row:SetSize(408, 40)
@@ -329,7 +358,7 @@ local function CreateMageTab(parent)
 
     -- Bottom Settings Checkboxes
     local filterCB = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
-    filterCB:SetPoint("TOPLEFT", 14, -365)
+    filterCB:SetPoint("TOPLEFT", 14, -402)
     filterCB:SetChecked(ns.db.filterChatSpam)
     filterCB.text:SetText("Hide [FT:...] protocol tags in chat")
     filterCB:SetScript("OnClick", function(self)
@@ -337,7 +366,7 @@ local function CreateMageTab(parent)
     end)
 
     local soundCB = CreateFrame("CheckButton", nil, tab2Frame, "UICheckButtonTemplate")
-    soundCB:SetPoint("TOPLEFT", 240, -365)
+    soundCB:SetPoint("TOPLEFT", 240, -402)
     soundCB:SetChecked(ns.db.soundAlert)
     soundCB.text:SetText("Sound alert on new request")
     soundCB:SetScript("OnClick", function(self)
@@ -414,21 +443,18 @@ end
 
 function ns.InitUI()
     mainFrame = CreateFrame("Frame", "ForeverTaxiMainFrame", UIParent, "BackdropTemplate")
-    mainFrame:SetSize(460, 415)
+    mainFrame:SetSize(460, 450)
     mainFrame:SetPoint("CENTER")
     ApplyDarkBackdrop(mainFrame, 0.9)
 
-    -- Register for Escape key closing
     table.insert(UISpecialFrames, "ForeverTaxiMainFrame")
 
-    -- Movable window
     mainFrame:SetMovable(true)
     mainFrame:EnableMouse(true)
     mainFrame:RegisterForDrag("LeftButton")
     mainFrame:SetScript("OnDragStart", mainFrame.StartMoving)
     mainFrame:SetScript("OnDragStop", mainFrame.StopMovingOrSizing)
 
-    -- Title & Close Button
     local title = mainFrame:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
     title:SetPoint("TOPLEFT", 16, -12)
     title:SetText("|cff00ccffForever|r|cffffffffTaxi|r")
@@ -436,7 +462,6 @@ function ns.InitUI()
     local closeBtn = CreateFrame("Button", nil, mainFrame, "UIPanelCloseButton")
     closeBtn:SetPoint("TOPRIGHT", -4, -4)
 
-    -- Tab Buttons
     tab1Btn = CreateFrame("Button", nil, mainFrame, "UIPanelButtonTemplate")
     tab1Btn:SetSize(140, 22)
     tab1Btn:SetPoint("TOPLEFT", 145, -12)
@@ -453,7 +478,6 @@ function ns.InitUI()
     CreateMageTab(mainFrame)
     CreateMinimapButton()
 
-    -- Default to Mage Dashboard if player is a Mage, otherwise Passenger
     SelectTab(ns.state.isMage and 2 or 1)
     mainFrame:Hide()
 end

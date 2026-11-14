@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Initialize shared namespace
 ns.name = addonName
-ns.version = "1.0.0"
+ns.version = "1.0.1"
 ns.CHANNEL_NAME = "ForeverTaxi"
 ns.ADDON_PREFIX = "FTAXI"
 ns.REQUEST_TTL = 180 -- Seconds before a taxi request expires
@@ -27,19 +27,20 @@ local defaults = {
     soundAlert = true,
     minimapAngle = 220,
     hudPos = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 180 },
+    knownPortals = {},   -- Keyed by "PlayerName-Realm" -> { ["Orgrimmar"] = true, ... }
 }
 
--- Faction city definitions and aliases
+-- Faction city definitions, spell IDs (Classic Era), and aliases
 ns.CITIES = {
     Horde = {
-        { name = "Orgrimmar",     spell = "Portal: Orgrimmar",     aliases = { "org", "og", "orgrimmar" } },
-        { name = "Thunder Bluff", spell = "Portal: Thunder Bluff", aliases = { "tb", "thunder", "thunderbluff", "thunder bluff" } },
-        { name = "Undercity",     spell = "Portal: Undercity",     aliases = { "uc", "undercity" } },
+        { name = "Orgrimmar",     spell = "Portal: Orgrimmar",     spellID = 11417, aliases = { "org", "og", "orgrimmar" } },
+        { name = "Undercity",     spell = "Portal: Undercity",     spellID = 11418, aliases = { "uc", "undercity" } },
+        { name = "Thunder Bluff", spell = "Portal: Thunder Bluff", spellID = 11420, aliases = { "tb", "thunder", "thunderbluff", "thunder bluff" } },
     },
     Alliance = {
-        { name = "Stormwind",     spell = "Portal: Stormwind",     aliases = { "sw", "stormwind" } },
-        { name = "Ironforge",     spell = "Portal: Ironforge",     aliases = { "if", "ironforge" } },
-        { name = "Darnassus",     spell = "Portal: Darnassus",     aliases = { "darn", "darnassus", "dn" } },
+        { name = "Stormwind",     spell = "Portal: Stormwind",     spellID = 10059, aliases = { "sw", "stormwind" } },
+        { name = "Ironforge",     spell = "Portal: Ironforge",     spellID = 11416, aliases = { "if", "ironforge" } },
+        { name = "Darnassus",     spell = "Portal: Darnassus",     spellID = 11419, aliases = { "darn", "darnassus", "dn" } },
     },
 }
 
@@ -47,9 +48,9 @@ ns.CITIES = {
 ns.CITY_LOOKUP = {}
 for faction, cities in pairs(ns.CITIES) do
     for _, data in ipairs(cities) do
-        ns.CITY_LOOKUP[string.lower(data.name)] = { name = data.name, spell = data.spell, faction = faction }
+        ns.CITY_LOOKUP[string.lower(data.name)] = { name = data.name, spell = data.spell, spellID = data.spellID, faction = faction }
         for _, alias in ipairs(data.aliases) do
-            ns.CITY_LOOKUP[alias] = { name = data.name, spell = data.spell, faction = faction }
+            ns.CITY_LOOKUP[alias] = { name = data.name, spell = data.spell, spellID = data.spellID, faction = faction }
         end
     end
 end
@@ -59,10 +60,70 @@ function ns.Print(msg)
     DEFAULT_CHAT_FRAME:AddMessage("|cff00ccff[ForeverTaxi]|r " .. tostring(msg))
 end
 
--- Utility: Normalize player name (strip realm if same realm, preserve cross-realm)
+-- Utility: Normalize player name
 function ns.NormalizeName(name)
     if not name or name == "" then return nil end
     return Ambiguate(name, "none")
+end
+
+-- Utility: Get unique character key for SavedVariables
+function ns.GetCharKey()
+    local name = UnitName("player") or "Unknown"
+    local realm = GetRealmName() or "Realm"
+    return name .. "-" .. realm
+end
+
+-- Utility: Auto-detect learned portal spells in spellbook if not yet configured
+function ns.SyncKnownPortals(forceAutoDetect)
+    if not ns.state.isMage or not ns.db then return end
+    local charKey = ns.GetCharKey()
+    ns.db.knownPortals = ns.db.knownPortals or {}
+
+    local charPortals = ns.db.knownPortals[charKey]
+    local isFirstSetup = (charPortals == nil)
+    if isFirstSetup then
+        charPortals = {}
+        ns.db.knownPortals[charKey] = charPortals
+    end
+
+    local cities = ns.CITIES[ns.state.faction] or {}
+    for _, c in ipairs(cities) do
+        local knowsSpell = (c.spellID and IsSpellKnown(c.spellID)) or (GetSpellInfo(c.spell) ~= nil)
+        if isFirstSetup or forceAutoDetect then
+            charPortals[c.name] = knowsSpell and true or false
+        elseif knowsSpell and charPortals[c.name] == nil then
+            charPortals[c.name] = true
+        end
+    end
+end
+
+-- Utility: Check if this Mage currently offers a specific city portal
+function ns.IsPortalEnabled(cityName)
+    if not ns.state.isMage or not ns.db or not ns.db.knownPortals then return false end
+    local charPortals = ns.db.knownPortals[ns.GetCharKey()]
+    if not charPortals then return false end
+    return charPortals[cityName] == true
+end
+
+-- Utility: Set whether a portal city is enabled for this Mage
+function ns.SetPortalEnabled(cityName, enabled)
+    if not ns.state.isMage or not ns.db then return end
+    local charKey = ns.GetCharKey()
+    ns.db.knownPortals = ns.db.knownPortals or {}
+    ns.db.knownPortals[charKey] = ns.db.knownPortals[charKey] or {}
+    ns.db.knownPortals[charKey][cityName] = enabled and true or false
+end
+
+-- Utility: Get list of enabled city objects for this Mage
+function ns.GetEnabledMageCities()
+    local result = {}
+    local cities = ns.CITIES[ns.state.faction] or {}
+    for _, c in ipairs(cities) do
+        if ns.IsPortalEnabled(c.name) then
+            table.insert(result, c)
+        end
+    end
+    return result
 end
 
 -- Utility: Get formatted current location
@@ -75,7 +136,7 @@ function ns.GetCurrentLocation()
     return zone
 end
 
--- Utility: Resolve a user string or alias into canonical city data for the player's faction
+-- Utility: Resolve a user string or alias into canonical city data
 function ns.ResolveCity(input, restrictToPlayerFaction)
     if not input or input == "" then return nil end
     local clean = string.lower(strtrim(input))
@@ -102,6 +163,11 @@ function ns.SetMageActive(active)
     end
 
     if active then
+        local enabledCities = ns.GetEnabledMageCities()
+        if #enabledCities == 0 then
+            ns.Print("|cffff5555Warning:|r You have no portals selected in the Mage Dashboard! Check at least one city first.")
+            return
+        end
         if not IsResting() then
             ns.Print("|cffffaa00Warning:|r You are not inside an inn! Scroll of Liminal Passage requires both players to be rested.")
         end
@@ -128,6 +194,7 @@ end
 local coreFrame = CreateFrame("Frame")
 coreFrame:RegisterEvent("ADDON_LOADED")
 coreFrame:RegisterEvent("PLAYER_LOGIN")
+coreFrame:RegisterEvent("SPELLS_CHANGED")
 coreFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
 coreFrame:RegisterEvent("PARTY_INVITE_REQUEST")
 coreFrame:RegisterEvent("GROUP_ROSTER_UPDATE")
@@ -150,18 +217,25 @@ coreFrame:SetScript("OnEvent", function(_, event, arg1)
         ns.state.faction = UnitFactionGroup("player")
         ns.state.isResting = IsResting() and true or false
 
+        ns.SyncKnownPortals(false)
+
         if ns.InitComms then ns.InitComms() end
         if ns.InitSecureHUD then ns.InitSecureHUD() end
         if ns.InitUI then ns.InitUI() end
 
         ns.Print("v" .. ns.version .. " loaded. Type |cff00ccff/taxi|r or |cff00ccff/ft|r to open.")
 
+    elseif event == "SPELLS_CHANGED" then
+        if ns.state.isMage then
+            ns.SyncKnownPortals(false)
+            if ns.UpdateUI then ns.UpdateUI() end
+        end
+
     elseif event == "PLAYER_UPDATE_RESTING" then
         local nowResting = IsResting() and true or false
         if nowResting ~= ns.state.isResting then
             ns.state.isResting = nowResting
 
-            -- Notify passenger or mage if rested state changes during an active transaction
             if ns.state.activeJob then
                 if not nowResting then
                     ns.Print("|cffff5555ALERT:|r You left the inn! Re-enter an inn before using Scroll of Liminal Passage.")
