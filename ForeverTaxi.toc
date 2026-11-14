@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: |cff00ccffForever|r|cffffffffTaxi|r
 ## Notes: Inn-to-Inn Mage Portal Taxi network using Scroll of Liminal Passage.
-## Author: Robert
+## Author: Mahranaka
 ## Version: 1.0.0
 ## SavedVariables: ForeverTaxiDB
 

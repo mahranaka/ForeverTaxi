@@ -158,10 +158,17 @@ function ns.MageBroadcastAdvert()
 
     ns.state.advertCycleIdx = (ns.state.advertCycleIdx % #activeTargets) + 1
     local target = activeTargets[ns.state.advertCycleIdx]
+    local lowerConfig = string.lower(target.configName)
 
     local msg
-    if string.lower(target.configName) == string.lower(ns.CHANNEL_NAME) then
+    if lowerConfig == string.lower(ns.CHANNEL_NAME) then
         msg = string.format("[FT:MAGE] Active ~ Cities: %s ~ Whisper %s or use ForeverTaxi!", cityList, cmdList)
+    elseif lowerConfig == "general" then
+        msg = string.format(
+            "Inn-to-Inn Mage Portals (%s) from ANY inn! Whisper %s for an instant invite (or grab the ForeverTaxi addon to request from anywhere!).",
+            cityList,
+            cmdList
+        )
     else
         msg = string.format(
             "Inn-to-Inn Mage Portals (%s) from ANY inn! Whisper %s for an instant invite.",
