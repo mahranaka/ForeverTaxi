@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Initialize shared namespace
 ns.name = addonName
-ns.version = "1.0.1"
+ns.version = "1.0.2"
 ns.CHANNEL_NAME = "ForeverTaxi"
 ns.ADDON_PREFIX = "FTAXI"
 ns.REQUEST_TTL = 180 -- Seconds before a taxi request expires
@@ -73,6 +73,20 @@ function ns.GetCharKey()
     return name .. "-" .. realm
 end
 
+-- Utility: Safe spellbook check compatible with 1.15+ C_Spell API
+function ns.DoesPlayerKnowSpell(spellID, spellName)
+    if spellID and IsSpellKnown and IsSpellKnown(spellID) then
+        return true
+    end
+    if spellName and C_Spell and C_Spell.GetSpellInfo then
+        local info = C_Spell.GetSpellInfo(spellName)
+        if info then return true end
+    elseif spellName and GetSpellInfo then
+        if GetSpellInfo(spellName) then return true end
+    end
+    return false
+end
+
 -- Utility: Auto-detect learned portal spells in spellbook if not yet configured
 function ns.SyncKnownPortals(forceAutoDetect)
     if not ns.state.isMage or not ns.db then return end
@@ -88,7 +102,7 @@ function ns.SyncKnownPortals(forceAutoDetect)
 
     local cities = ns.CITIES[ns.state.faction] or {}
     for _, c in ipairs(cities) do
-        local knowsSpell = (c.spellID and IsSpellKnown(c.spellID)) or (GetSpellInfo(c.spell) ~= nil)
+        local knowsSpell = ns.DoesPlayerKnowSpell(c.spellID, c.spell)
         if isFirstSetup or forceAutoDetect then
             charPortals[c.name] = knowsSpell and true or false
         elseif knowsSpell and charPortals[c.name] == nil then

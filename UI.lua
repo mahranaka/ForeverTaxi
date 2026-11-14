@@ -108,7 +108,7 @@ local function UpdateMageTab()
     for _, cb in ipairs(portalCheckboxes) do
         cb:Enable()
         cb:SetChecked(ns.IsPortalEnabled(cb.cityName))
-        local knowsSpell = (cb.spellID and IsSpellKnown(cb.spellID)) or (GetSpellInfo(cb.spellName) ~= nil)
+        local knowsSpell = ns.DoesPlayerKnowSpell(cb.spellID, cb.spellName)
         if knowsSpell then
             cb.text:SetText("|cffffffff" .. cb.cityName .. "|r")
         else
