@@ -14,6 +14,8 @@ local toggleActiveBtn, advertBtn, reagentStatusLabel
 local portalCheckboxes = {}
 local channelPool = {}
 local channelBox, addChannelEditBox
+local selectedEditChannel = nil
+local templateHeaderLabel, templateEditBox, saveTemplateBtn, resetTemplateBtn
 local requestRows = {}
 local emptyQueueLabel
 
@@ -39,6 +41,46 @@ local function CreateLabeledCheckbox(parent, size)
     cb.label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     cb.label:SetPoint("LEFT", cb, "RIGHT", 2, 0)
     return cb
+end
+
+-- Find an advertChannel entry by name (case-insensitive)
+local function FindChannelEntry(name)
+    if not name or not ns.db or not ns.db.advertChannels then return nil end
+    for _, entry in ipairs(ns.db.advertChannels) do
+        if string.lower(entry.name) == string.lower(name) then
+            return entry
+        end
+    end
+    return nil
+end
+
+-- Load the selected channel's template into the editor box
+local function SyncTemplateEditor(forceReloadText)
+    if not templateEditBox or not ns.db or not ns.db.advertChannels then return end
+
+    local entry = FindChannelEntry(selectedEditChannel)
+    if not entry then
+        entry = ns.db.advertChannels[1]
+        selectedEditChannel = entry and entry.name or nil
+    end
+
+    if not entry then
+        templateHeaderLabel:SetText("Advert Text: |cff888888None|r")
+        templateEditBox:SetText("")
+        templateEditBox:Disable()
+        saveTemplateBtn:Disable()
+        resetTemplateBtn:Disable()
+        return
+    end
+
+    templateHeaderLabel:SetText("Text for |cff00ccff#" .. entry.name .. "|r:")
+    templateEditBox:Enable()
+    saveTemplateBtn:Enable()
+    resetTemplateBtn:Enable()
+
+    if forceReloadText or not templateEditBox:HasFocus() then
+        templateEditBox:SetText(entry.template or ns.GetDefaultChannelTemplate(entry.name))
+    end
 end
 
 -- Switch between Passenger (1) and Mage Dashboard (2) tabs
@@ -108,9 +150,15 @@ local function RefreshAdvertChannelsUI()
                 if button == "RightButton" then
                     self:SetChecked(self.entry.enabled)
                     ns.RemoveAdvertChannel(self.entry.name)
+                    if selectedEditChannel and string.lower(selectedEditChannel) == string.lower(self.entry.name) then
+                        selectedEditChannel = nil
+                    end
+                    SyncTemplateEditor(true)
                     ns.UpdateUI()
                 else
                     self.entry.enabled = self:GetChecked() and true or false
+                    selectedEditChannel = self.entry.name
+                    SyncTemplateEditor(true)
                     ns.UpdateUI()
                 end
             end)
@@ -123,6 +171,7 @@ local function RefreshAdvertChannelsUI()
                 else
                     GameTooltip:AddLine("|cffffaa00Not currently joined|r (will skip until joined)", 1, 1, 1)
                 end
+                GameTooltip:AddLine("|cffffffffLeft-Click:|r Toggle & edit advert text", 0.8, 0.8, 0.8)
                 if string.lower(self.entry.name) ~= string.lower(ns.CHANNEL_NAME) then
                     GameTooltip:AddLine("|cffaaaaaaRight-Click to remove from list|r")
                 end
@@ -140,16 +189,19 @@ local function RefreshAdvertChannelsUI()
         local col = (i - 1) % 2
         local row = math.floor((i - 1) / 2)
         cb:ClearAllPoints()
-        cb:SetPoint("TOPLEFT", 6 + (col * 204), -6 - (row * 22))
+        cb:SetPoint("TOPLEFT", 6 + (col * 204), -4 - (row * 20))
         cb:SetChecked(entry.enabled)
 
+        local isEditing = selectedEditChannel and (string.lower(selectedEditChannel) == string.lower(entry.name))
+        local editMarker = isEditing and "|cff00ccff>|r " or ""
         local idTag = cId and ("|cff00ccff/" .. cId .. "|r ") or ""
+
         if not entry.enabled then
-            cb.label:SetText("|cff888888" .. entry.name .. "|r")
+            cb.label:SetText(editMarker .. "|cff888888" .. entry.name .. "|r")
         elseif cId then
-            cb.label:SetText(idTag .. "|cffffffff" .. entry.name .. "|r")
+            cb.label:SetText(editMarker .. idTag .. "|cffffffff" .. entry.name .. "|r")
         else
-            cb.label:SetText("|cffffaa00" .. entry.name .. " (Offline)|r")
+            cb.label:SetText(editMarker .. "|cffffaa00" .. entry.name .. " (Offline)|r")
         end
 
         if i <= 6 then
@@ -197,6 +249,7 @@ local function UpdateMageTab()
     end
 
     RefreshAdvertChannelsUI()
+    SyncTemplateEditor(false)
 
     local scrolls, runes = ns.GetMageReagentCounts()
     reagentStatusLabel:SetText(string.format(
@@ -251,6 +304,7 @@ function ns.ToggleMainWindow()
         mainFrame:Hide()
     else
         mainFrame:Show()
+        SyncTemplateEditor(true)
         ns.UpdateUI()
     end
 end
@@ -357,7 +411,7 @@ local function CreateMageTab(parent)
 
     toggleActiveBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
     toggleActiveBtn:SetSize(245, 28)
-    toggleActiveBtn:SetPoint("TOPLEFT", 18, -48)
+    toggleActiveBtn:SetPoint("TOPLEFT", 18, -46)
     toggleActiveBtn:SetScript("OnClick", function()
         ns.SetMageActive(not ns.state.mageActive)
     end)
@@ -379,17 +433,17 @@ local function CreateMageTab(parent)
     advertBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     reagentStatusLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    reagentStatusLabel:SetPoint("TOPLEFT", 18, -82)
+    reagentStatusLabel:SetPoint("TOPLEFT", 18, -79)
 
     -- Learned / Offered Portals Selector Box
     local portalHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    portalHeader:SetPoint("TOPLEFT", 18, -100)
+    portalHeader:SetPoint("TOPLEFT", 18, -96)
     portalHeader:SetText("Learned / Offered Portals:")
 
     local cities = ns.CITIES[ns.state.faction] or {}
     for idx, cityData in ipairs(cities) do
-        local cb = CreateLabeledCheckbox(tab2Frame, 22)
-        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -114)
+        local cb = CreateLabeledCheckbox(tab2Frame, 20)
+        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -110)
         cb.cityName = cityData.name
         cb.spellName = cityData.spell
         cb.spellID = cityData.spellID
@@ -403,18 +457,23 @@ local function CreateMageTab(parent)
 
     -- Advertise Channels Selector + Add Field
     local chanHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    chanHeader:SetPoint("TOPLEFT", 18, -142)
+    chanHeader:SetPoint("TOPLEFT", 18, -135)
     chanHeader:SetText("Advertise Channels:")
 
     addChannelEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
     addChannelEditBox:SetSize(135, 20)
-    addChannelEditBox:SetPoint("TOPLEFT", 248, -138)
+    addChannelEditBox:SetPoint("TOPLEFT", 248, -131)
     addChannelEditBox:SetAutoFocus(false)
     addChannelEditBox:SetMaxLetters(32)
     addChannelEditBox:SetScript("OnEnterPressed", function(self)
-        if ns.AddAdvertChannel(self:GetText()) then
+        local raw = self:GetText()
+        if ns.AddAdvertChannel(raw) then
+            local clean = strtrim(raw or "")
+            clean = string.gsub(clean, "^[#/%d%.%s]+", "")
+            if clean ~= "" then selectedEditChannel = clean end
             self:SetText("")
             self:ClearFocus()
+            SyncTemplateEditor(true)
             ns.UpdateUI()
         end
     end)
@@ -427,26 +486,90 @@ local function CreateMageTab(parent)
     addChanBtn:SetPoint("LEFT", addChannelEditBox, "RIGHT", 4, 0)
     addChanBtn:SetText("Add")
     addChanBtn:SetScript("OnClick", function()
-        if ns.AddAdvertChannel(addChannelEditBox:GetText()) then
+        local raw = addChannelEditBox:GetText()
+        if ns.AddAdvertChannel(raw) then
+            local clean = strtrim(raw or "")
+            clean = string.gsub(clean, "^[#/%d%.%s]+", "")
+            if clean ~= "" then selectedEditChannel = clean end
             addChannelEditBox:SetText("")
             addChannelEditBox:ClearFocus()
+            SyncTemplateEditor(true)
             ns.UpdateUI()
         end
     end)
 
     channelBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
-    channelBox:SetSize(424, 76)
-    channelBox:SetPoint("TOPLEFT", 18, -162)
+    channelBox:SetSize(424, 66)
+    channelBox:SetPoint("TOPLEFT", 18, -153)
     ApplyDarkBackdrop(channelBox, 0.45)
+
+    -- Per-Channel Custom Advert Message Editor
+    templateHeaderLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    templateHeaderLabel:SetPoint("TOPLEFT", 18, -225)
+    templateHeaderLabel:SetText("Text for #ForeverTaxi:")
+
+    local placeholderHint = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    placeholderHint:SetPoint("TOPRIGHT", -18, -225)
+    placeholderHint:SetText("|cff888888Tags: {cities}  {cmds}|r")
+
+    templateEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
+    templateEditBox:SetSize(316, 20)
+    templateEditBox:SetPoint("TOPLEFT", 22, -240)
+    templateEditBox:SetAutoFocus(false)
+    templateEditBox:SetMaxLetters(240)
+    templateEditBox:SetScript("OnEnterPressed", function(self)
+        if selectedEditChannel then
+            ns.SetAdvertChannelTemplate(selectedEditChannel, self:GetText())
+            SyncTemplateEditor(true)
+        end
+        self:ClearFocus()
+    end)
+    templateEditBox:SetScript("OnEscapePressed", function(self)
+        SyncTemplateEditor(true)
+        self:ClearFocus()
+    end)
+    templateEditBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Custom Channel Advert Template")
+        GameTooltip:AddLine("|cff00ccff{cities}|r = Checked portal cities (e.g. Orgrimmar, Undercity)", 1, 1, 1)
+        GameTooltip:AddLine("|cff00ccff{cmds}|r = Whisper aliases (e.g. 'org' or 'uc')", 1, 1, 1)
+        GameTooltip:AddLine("|cffaaaaaaClick a channel above to switch templates.|r")
+        GameTooltip:Show()
+    end)
+    templateEditBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    saveTemplateBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    saveTemplateBtn:SetSize(48, 22)
+    saveTemplateBtn:SetPoint("LEFT", templateEditBox, "RIGHT", 4, 0)
+    saveTemplateBtn:SetText("Save")
+    saveTemplateBtn:SetScript("OnClick", function()
+        if selectedEditChannel then
+            ns.SetAdvertChannelTemplate(selectedEditChannel, templateEditBox:GetText())
+            templateEditBox:ClearFocus()
+            SyncTemplateEditor(true)
+        end
+    end)
+
+    resetTemplateBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    resetTemplateBtn:SetSize(48, 22)
+    resetTemplateBtn:SetPoint("LEFT", saveTemplateBtn, "RIGHT", 3, 0)
+    resetTemplateBtn:SetText("Reset")
+    resetTemplateBtn:SetScript("OnClick", function()
+        if selectedEditChannel then
+            ns.ResetAdvertChannelTemplate(selectedEditChannel)
+            templateEditBox:ClearFocus()
+            SyncTemplateEditor(true)
+        end
+    end)
 
     -- Request Queue List Container
     local queueHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    queueHeader:SetPoint("TOPLEFT", 18, -246)
+    queueHeader:SetPoint("TOPLEFT", 18, -268)
     queueHeader:SetText("Incoming Passenger Requests:")
 
     local queueBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
-    queueBox:SetSize(424, 228)
-    queueBox:SetPoint("TOPLEFT", 18, -264)
+    queueBox:SetSize(424, 212)
+    queueBox:SetPoint("TOPLEFT", 18, -285)
     ApplyDarkBackdrop(queueBox, 0.5)
 
     emptyQueueLabel = queueBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -456,20 +579,20 @@ local function CreateMageTab(parent)
 
     for i = 1, 5 do
         local row = CreateFrame("Frame", nil, queueBox, "BackdropTemplate")
-        row:SetSize(408, 40)
-        row:SetPoint("TOPLEFT", 8, -8 - ((i - 1) * 43))
+        row:SetSize(408, 37)
+        row:SetPoint("TOPLEFT", 8, -7 - ((i - 1) * 40))
         ApplyDarkBackdrop(row, 0.35)
 
         row.playerText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.playerText:SetPoint("TOPLEFT", 8, -6)
+        row.playerText:SetPoint("TOPLEFT", 8, -5)
 
         row.infoText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-        row.infoText:SetPoint("TOPLEFT", 8, -21)
+        row.infoText:SetPoint("TOPLEFT", 8, -19)
         row.infoText:SetWidth(310)
         row.infoText:SetJustifyH("LEFT")
 
         local acceptBtn = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-        acceptBtn:SetSize(78, 24)
+        acceptBtn:SetSize(78, 23)
         acceptBtn:SetPoint("RIGHT", -8, 0)
         acceptBtn:SetText("Accept Job")
         acceptBtn:SetScript("OnClick", function()
@@ -484,7 +607,7 @@ local function CreateMageTab(parent)
 
     -- Bottom Settings Checkboxes
     local filterCB = CreateLabeledCheckbox(tab2Frame, 22)
-    filterCB:SetPoint("TOPLEFT", 14, -498)
+    filterCB:SetPoint("TOPLEFT", 14, -503)
     filterCB:SetChecked(ns.db.filterChatSpam)
     filterCB.label:SetText("Hide [FT:...] protocol tags in chat")
     filterCB:SetScript("OnClick", function(self)
@@ -492,12 +615,14 @@ local function CreateMageTab(parent)
     end)
 
     local soundCB = CreateLabeledCheckbox(tab2Frame, 22)
-    soundCB:SetPoint("TOPLEFT", 240, -498)
+    soundCB:SetPoint("TOPLEFT", 240, -503)
     soundCB:SetChecked(ns.db.soundAlert)
     soundCB.label:SetText("Sound alert on new request")
     soundCB:SetScript("OnClick", function(self)
         ns.db.soundAlert = self:GetChecked() and true or false
     end)
+
+    SyncTemplateEditor(true)
 end
 
 -- Create Draggable Minimap Button

@@ -20,6 +20,18 @@ ns.state = {
     advertCycleIdx = 0,  -- Tracks round-robin index across selected advert channels
 }
 
+-- Default message templates per channel ({cities} and {cmds} are substituted dynamically)
+function ns.GetDefaultChannelTemplate(channelName)
+    local lower = string.lower(strtrim(channelName or ""))
+    if lower == string.lower(ns.CHANNEL_NAME) then
+        return "[FT:MAGE] Active ~ Cities: {cities} ~ Whisper {cmds} or use ForeverTaxi!"
+    elseif lower == "general" then
+        return "Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite (or grab the ForeverTaxi addon to request from anywhere!)."
+    else
+        return "Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite."
+    end
+end
+
 -- SavedVariables defaults
 local defaults = {
     defaultTip = 2,
@@ -29,10 +41,10 @@ local defaults = {
     minimapAngle = 220,
     hudPos = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 180 },
     knownPortals = {},   -- Keyed by "PlayerName-Realm" -> { ["Orgrimmar"] = true, ... }
-    advertChannels = {   -- Ordered list of { name = "ChannelName", enabled = bool }
-        { name = "ForeverTaxi", enabled = true },
-        { name = "Trade",       enabled = true },
-        { name = "General",     enabled = true },
+    advertChannels = {   -- Ordered list of { name = "ChannelName", enabled = bool, template = string }
+        { name = "ForeverTaxi", enabled = true, template = ns.GetDefaultChannelTemplate("ForeverTaxi") },
+        { name = "Trade",       enabled = true, template = ns.GetDefaultChannelTemplate("Trade") },
+        { name = "General",     enabled = true, template = ns.GetDefaultChannelTemplate("General") },
     },
 }
 
@@ -158,12 +170,19 @@ function ns.AddAdvertChannel(channelName)
     for _, entry in ipairs(ns.db.advertChannels) do
         if string.lower(entry.name) == string.lower(clean) then
             entry.enabled = true
+            if not entry.template or entry.template == "" then
+                entry.template = ns.GetDefaultChannelTemplate(entry.name)
+            end
             ns.Print("Channel |cffffffff#" .. entry.name .. "|r is already in the list (enabled).")
             return true
         end
     end
 
-    table.insert(ns.db.advertChannels, { name = clean, enabled = true })
+    table.insert(ns.db.advertChannels, {
+        name = clean,
+        enabled = true,
+        template = ns.GetDefaultChannelTemplate(clean),
+    })
     ns.Print("Added |cffffffff#" .. clean .. "|r to advert channels.")
     return true
 end
@@ -179,6 +198,35 @@ function ns.RemoveAdvertChannel(channelName)
         if string.lower(entry.name) == string.lower(channelName) then
             table.remove(ns.db.advertChannels, i)
             ns.Print("Removed |cffffffff#" .. entry.name .. "|r from advert channels.")
+            return
+        end
+    end
+end
+
+-- Utility: Update a channel's custom advert template
+function ns.SetAdvertChannelTemplate(channelName, text)
+    if not ns.db or not ns.db.advertChannels then return end
+    local cleanText = strtrim(text or "")
+    for _, entry in ipairs(ns.db.advertChannels) do
+        if string.lower(entry.name) == string.lower(channelName) then
+            if cleanText == "" then
+                entry.template = ns.GetDefaultChannelTemplate(entry.name)
+            else
+                entry.template = cleanText
+            end
+            ns.Print("Saved advert text for |cffffffff#" .. entry.name .. "|r.")
+            return
+        end
+    end
+end
+
+-- Utility: Reset a channel's advert template back to default
+function ns.ResetAdvertChannelTemplate(channelName)
+    if not ns.db or not ns.db.advertChannels then return end
+    for _, entry in ipairs(ns.db.advertChannels) do
+        if string.lower(entry.name) == string.lower(channelName) then
+            entry.template = ns.GetDefaultChannelTemplate(entry.name)
+            ns.Print("Reset advert text for |cffffffff#" .. entry.name .. "|r to default.")
             return
         end
     end
@@ -269,6 +317,15 @@ coreFrame:SetScript("OnEvent", function(_, event, arg1)
             end
         end
         ns.db = ForeverTaxiDB
+
+        -- Backfill default templates onto existing SavedVariables channel entries
+        if type(ns.db.advertChannels) == "table" then
+            for _, entry in ipairs(ns.db.advertChannels) do
+                if not entry.template or entry.template == "" then
+                    entry.template = ns.GetDefaultChannelTemplate(entry.name)
+                end
+            end
+        end
 
     elseif event == "PLAYER_LOGIN" then
         local _, classFile = UnitClass("player")

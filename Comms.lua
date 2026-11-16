@@ -120,7 +120,24 @@ function ns.SendRestStatus(mageName, isResting)
     ns.SendAddonWhisper(mageName, "REST_STATUS:" .. (isResting and "1" or "0"))
 end
 
--- Mage: Cycle through checked & joined advert channels and pre-fill the appropriate advert
+-- Helper: Format a channel's template with active {cities} and {cmds}
+function ns.FormatAdvertMessage(entry, cityList, cmdList)
+    local template = (entry and entry.template and entry.template ~= "")
+        and entry.template
+        or ns.GetDefaultChannelTemplate(entry and entry.name or "")
+
+    -- Escape '%' in replacement strings so string.gsub doesn't treat them as capture references
+    local safeCities = string.gsub(cityList or "", "%%", "%%%%")
+    local safeCmds = string.gsub(cmdList or "", "%%", "%%%%")
+
+    local msg = string.gsub(template, "{cities}", safeCities)
+    msg = string.gsub(msg, "{cmds}", safeCmds)
+    -- Strip any accidental '|' characters that WoW chat blocks
+    msg = string.gsub(msg, "|", "")
+    return msg
+end
+
+-- Mage: Cycle through checked & joined advert channels and pre-fill the configured advert
 function ns.MageBroadcastAdvert()
     if not ns.state.isMage then return end
     local enabledCities = ns.GetEnabledMageCities()
@@ -146,7 +163,11 @@ function ns.MageBroadcastAdvert()
             end
             local cId, actualName = ns.ResolveJoinedChannelId(entry.name)
             if cId then
-                table.insert(activeTargets, { id = cId, name = actualName or entry.name, configName = entry.name })
+                table.insert(activeTargets, {
+                    id = cId,
+                    name = actualName or entry.name,
+                    entry = entry,
+                })
             end
         end
     end
@@ -158,24 +179,7 @@ function ns.MageBroadcastAdvert()
 
     ns.state.advertCycleIdx = (ns.state.advertCycleIdx % #activeTargets) + 1
     local target = activeTargets[ns.state.advertCycleIdx]
-    local lowerConfig = string.lower(target.configName)
-
-    local msg
-    if lowerConfig == string.lower(ns.CHANNEL_NAME) then
-        msg = string.format("[FT:MAGE] Active ~ Cities: %s ~ Whisper %s or use ForeverTaxi!", cityList, cmdList)
-    elseif lowerConfig == "general" then
-        msg = string.format(
-            "Inn-to-Inn Mage Portals (%s) from ANY inn! Whisper %s for an instant invite (or grab the ForeverTaxi addon to request from anywhere!).",
-            cityList,
-            cmdList
-        )
-    else
-        msg = string.format(
-            "Inn-to-Inn Mage Portals (%s) from ANY inn! Whisper %s for an instant invite.",
-            cityList,
-            cmdList
-        )
-    end
+    local msg = ns.FormatAdvertMessage(target.entry, cityList, cmdList)
 
     ns.PrefillChannelChat(target.id, msg, target.name)
     if ns.UpdateUI then ns.UpdateUI() end
