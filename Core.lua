@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Initialize shared namespace
 ns.name = addonName
-ns.version = "1.2.0"
+ns.version = "1.2.2"
 ns.CHANNEL_NAME = "ForeverTaxi"
 ns.ADDON_PREFIX = "FTAXI"
 ns.REQUEST_TTL = 180 -- Seconds before a taxi request expires
@@ -20,21 +20,54 @@ ns.state = {
     advertCycleIdx = 0,  -- Tracks round-robin index across selected advert channels
 }
 
--- Default message templates per channel ({cities} and {cmds} are substituted dynamically)
+-- Format a numeric tip cleanly (e.g., 2 -> "2", 0.5 -> "0.5")
+function ns.FormatTipNumber(val)
+    local num = tonumber(val)
+    if not num or num < 0 then return "0" end
+    if math.floor(num) == num then
+        return tostring(math.floor(num))
+    end
+    local s = string.format("%.2f", num)
+    s = string.gsub(s, "0+$", "")
+    s = string.gsub(s, "%.$", "")
+    return s
+end
+
+-- Normalize the Mage's advertised price string (e.g., "1" -> "1g", "0.5g" -> "0.5g")
+function ns.GetFormattedMagePrice()
+    local raw = strtrim((ns.db and ns.db.magePrice) or "1g")
+    if raw == "" then raw = "1g" end
+    if tonumber(raw) then
+        return ns.FormatTipNumber(raw) .. "g"
+    end
+    return raw
+end
+
+-- Default message templates per channel ({cities}, {cmds}, and {price} are substituted dynamically)
 function ns.GetDefaultChannelTemplate(channelName)
     local lower = string.lower(strtrim(channelName or ""))
     if lower == string.lower(ns.CHANNEL_NAME) then
-        return "[FT:MAGE] Active ~ Cities: {cities} ~ Whisper {cmds} or use ForeverTaxi!"
+        return "[FT:MAGE] Active ~ Cities: {cities} ~ Whisper {cmds} or use ForeverTaxi! Price: {price}"
+    elseif lower == "trade" then
+        return "Inn-to-City Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite. Join the channel /join ForeverTaxi to always be able to request (or get the Addon ForeverTaxi)! Price: {price}"
     elseif lower == "general" then
-        return "Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite (or grab the ForeverTaxi addon to request from anywhere!)."
+        return "Inn-to-City Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite (or grab the ForeverTaxi addon to request from anywhere! Or just join the Channel /join ForeverTaxi). Price: {price}"
     else
-        return "Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite."
+        return "Inn-to-City Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite. Price: {price}"
     end
 end
+
+-- Previous v1.2.0 templates so existing SavedVariables auto-migrate cleanly
+local LEGACY_TEMPLATES = {
+    ["[FT:MAGE] Active ~ Cities: {cities} ~ Whisper {cmds} or use ForeverTaxi!"] = true,
+    ["Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite (or grab the ForeverTaxi addon to request from anywhere!)."] = true,
+    ["Inn-to-Inn Mage Portals ({cities}) from ANY inn! Whisper {cmds} for an instant invite."] = true,
+}
 
 -- SavedVariables defaults
 local defaults = {
     defaultTip = 2,
+    magePrice = "1g",
     autoAcceptInvite = true,
     filterChatSpam = true,
     soundAlert = true,
@@ -162,7 +195,6 @@ end
 function ns.AddAdvertChannel(channelName)
     if not ns.db then return false end
     local clean = strtrim(channelName or "")
-    -- Strip leading #, /, or channel number prefixes if entered
     clean = string.gsub(clean, "^[#/%d%.%s]+", "")
     if clean == "" then return false end
 
@@ -220,7 +252,7 @@ function ns.SetAdvertChannelTemplate(channelName, text)
     end
 end
 
--- Utility: Reset a channel's advert template back to default
+-- Utility: Reset a single channel's advert template back to default
 function ns.ResetAdvertChannelTemplate(channelName)
     if not ns.db or not ns.db.advertChannels then return end
     for _, entry in ipairs(ns.db.advertChannels) do
@@ -230,6 +262,15 @@ function ns.ResetAdvertChannelTemplate(channelName)
             return
         end
     end
+end
+
+-- Utility: Reset all channel advert templates back to their defaults
+function ns.ResetAllAdvertChannelTemplates()
+    if not ns.db or not ns.db.advertChannels then return end
+    for _, entry in ipairs(ns.db.advertChannels) do
+        entry.template = ns.GetDefaultChannelTemplate(entry.name)
+    end
+    ns.Print("Reset all channel advert texts to default.")
 end
 
 -- Utility: Get formatted current location
@@ -318,10 +359,10 @@ coreFrame:SetScript("OnEvent", function(_, event, arg1)
         end
         ns.db = ForeverTaxiDB
 
-        -- Backfill default templates onto existing SavedVariables channel entries
+        -- Backfill / migrate default templates onto existing SavedVariables channel entries
         if type(ns.db.advertChannels) == "table" then
             for _, entry in ipairs(ns.db.advertChannels) do
-                if not entry.template or entry.template == "" then
+                if not entry.template or entry.template == "" or LEGACY_TEMPLATES[entry.template] then
                     entry.template = ns.GetDefaultChannelTemplate(entry.name)
                 end
             end

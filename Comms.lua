@@ -68,7 +68,7 @@ function ns.SendAddonWhisper(target, payload)
     C_ChatInfo.SendAddonMessage(ns.ADDON_PREFIX, payload, "WHISPER", target)
 end
 
--- Passenger: Broadcast a portal request
+-- Passenger: Broadcast a portal request (supports decimal tip values like 0.5)
 function ns.PassengerBroadcastRequest(cityName, tipAmount)
     local cityData = ns.ResolveCity(cityName, true)
     if not cityData then
@@ -82,12 +82,16 @@ function ns.PassengerBroadcastRequest(cityName, tipAmount)
         return false
     end
 
-    local tip = tonumber(tipAmount) or ns.db.defaultTip or 2
+    local cleanTipStr = string.gsub(strtrim(tostring(tipAmount or "")), ",", ".")
+    local tip = tonumber(cleanTipStr)
+    if tip == nil then
+        tip = tonumber(ns.db.defaultTip) or 2
+    end
     if tip < 0 then tip = 0 end
 
     local location = ns.GetCurrentLocation()
     local restTag = IsResting() and "RESTED" or "NOT_RESTED"
-    local msg = string.format("[FT:REQ] %s ~ %s ~ %dg ~ %s", cityData.name, location, tip, restTag)
+    local msg = string.format("[FT:REQ] %s ~ %s ~ %sg ~ %s", cityData.name, location, ns.FormatTipNumber(tip), restTag)
 
     ns.state.myRequest = {
         city = cityData.name,
@@ -120,18 +124,22 @@ function ns.SendRestStatus(mageName, isResting)
     ns.SendAddonWhisper(mageName, "REST_STATUS:" .. (isResting and "1" or "0"))
 end
 
--- Helper: Format a channel's template with active {cities} and {cmds}
+-- Helper: Format a channel's template with active {cities}, {cmds}, and {price}
 function ns.FormatAdvertMessage(entry, cityList, cmdList)
     local template = (entry and entry.template and entry.template ~= "")
         and entry.template
         or ns.GetDefaultChannelTemplate(entry and entry.name or "")
 
+    local priceStr = ns.GetFormattedMagePrice()
+
     -- Escape '%' in replacement strings so string.gsub doesn't treat them as capture references
     local safeCities = string.gsub(cityList or "", "%%", "%%%%")
     local safeCmds = string.gsub(cmdList or "", "%%", "%%%%")
+    local safePrice = string.gsub(priceStr or "", "%%", "%%%%")
 
     local msg = string.gsub(template, "{cities}", safeCities)
     msg = string.gsub(msg, "{cmds}", safeCmds)
+    msg = string.gsub(msg, "{price}", safePrice)
     -- Strip any accidental '|' characters that WoW chat blocks
     msg = string.gsub(msg, "|", "")
     return msg
@@ -273,7 +281,7 @@ function ns.InjectTestRequest()
         city = cityData.name,
         spell = cityData.spell,
         location = "Crossroads (Inn)",
-        tip = ns.db.defaultTip or 2,
+        tip = tonumber(ns.db.defaultTip) or 2,
         isResting = true,
         source = "WHISPER",
         timestamp = GetTime(),
@@ -292,7 +300,7 @@ local function ParseChannelMessage(msg, sender)
         local cityPart, locPart, tipPart, restPart = strsplit("~", reqBody)
         local cityData = ns.ResolveCity(cityPart, true)
         if cityData then
-            local tip = tonumber(string.match(tipPart or "", "(%d+)")) or 0
+            local tip = tonumber(string.match(tipPart or "", "(%d+%.?%d*)")) or 0
             local location = strtrim(locPart or "Unknown")
             local isResting = (strtrim(restPart or "") ~= "NOT_RESTED")
             UpsertRequest(normSender, cityData, location, tip, isResting, "CHANNEL")
@@ -323,7 +331,7 @@ local function ExtractCityFromWhisper(lowerMsg)
     end
 
     -- Strip optional leading/trailing punctuation (!, ?, .) and normalize spaces
-    local cleaned = string.gsub(lowerMsg, "[!%?%.,]+", " ")
+    local cleaned = string.gsub(lowerMsg, "[!%?%,]+", " ")
     cleaned = strtrim(string.gsub(cleaned, "%s+", " "))
 
     -- 1. Direct match on full message (e.g., "org", "uc", "orgrimmar")
@@ -332,9 +340,9 @@ local function ExtractCityFromWhisper(lowerMsg)
         return direct, true
     end
 
-    -- 2. Command/phrase prefixes (e.g., "taxi org", "port to undercity", "portal org 5g", "tp uc")
+    -- 2. Command/phrase prefixes (e.g., "taxi org", "port to undercity", "portal org 0.5g", "tp uc")
     local stripped = string.gsub(cleaned, "^(taxi|port|portal|tp|summon|inv|invite|need|lf|looking for|can i get|pls|please|to|a)+%s+", "")
-    stripped = string.gsub(stripped, "%s+(please|pls|ty|thanks|thx|inn|now|%d+g).*$", "")
+    stripped = string.gsub(stripped, "%s+(please|pls|ty|thanks|thx|inn|now|%d+%.?%d*g).*$", "")
     local prefixMatch = ns.ResolveCity(stripped, true)
     if prefixMatch then
         return prefixMatch, true
@@ -399,7 +407,7 @@ local function ParseWhisperCommand(msg, sender)
         return
     end
 
-    local offeredTip = tonumber(string.match(lowerMsg, "(%d+)%s*g")) or ns.db.defaultTip or 2
+    local offeredTip = tonumber(string.match(lowerMsg, "(%d+%.?%d*)%s*g")) or tonumber(ns.db.defaultTip) or 2
 
     UpsertRequest(normSender, cityData, "Whisper Request (Verify Inn)", offeredTip, true, "WHISPER")
     SendChatMessage(

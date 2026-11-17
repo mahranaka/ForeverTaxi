@@ -62,7 +62,8 @@ function ns.UpdateSecureHUD()
         return
     end
 
-    customerText:SetText("|cffffffffCustomer:|r |cff00ccff" .. job.customer .. "|r  (|cffffd100" .. job.tip .. "g|r)")
+    local tipStr = ns.FormatTipNumber and ns.FormatTipNumber(job.tip) or tostring(job.tip)
+    customerText:SetText("|cffffffffCustomer:|r |cff00ccff" .. job.customer .. "|r  (|cffffd100" .. tipStr .. "g|r)")
     locationText:SetText("|cffffffffLocation:|r " .. job.location)
     destText:SetText("|cffffffffDestination:|r |cff55ff55" .. job.city .. "|r")
 

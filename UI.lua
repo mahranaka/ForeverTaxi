@@ -10,12 +10,12 @@ local cityDropdown, tipEditBox, locLabel, restWarnLabel, broadcastBtn, cancelReq
 local mageListContainer
 
 -- Mage Tab Widgets
-local toggleActiveBtn, advertBtn, reagentStatusLabel
+local toggleActiveBtn, advertBtn, reagentStatusLabel, magePriceEditBox
 local portalCheckboxes = {}
 local channelPool = {}
 local channelBox, addChannelEditBox
 local selectedEditChannel = nil
-local templateHeaderLabel, templateEditBox, saveTemplateBtn, resetTemplateBtn
+local templateHeaderLabel, templateEditBox, saveTemplateBtn, resetTemplateBtn, resetAllTemplatesBtn
 local requestRows = {}
 local emptyQueueLabel
 
@@ -41,6 +41,25 @@ local function CreateLabeledCheckbox(parent, size)
     cb.label = cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     cb.label:SetPoint("LEFT", cb, "RIGHT", 2, 0)
     return cb
+end
+
+-- Sanitize decimal numeric input (allows digits and a single decimal point, e.g., 0.5)
+local function SanitizeDecimalInput(editBox)
+    local text = editBox:GetText() or ""
+    local cleaned = string.gsub(text, ",", ".")
+    cleaned = string.gsub(cleaned, "[^0-9%.]", "")
+    local firstDot = string.find(cleaned, "%.")
+    if firstDot then
+        local before = string.sub(cleaned, 1, firstDot)
+        local after = string.gsub(string.sub(cleaned, firstDot + 1), "%.", "")
+        cleaned = before .. after
+    end
+    if cleaned ~= text then
+        local cursor = editBox:GetCursorPosition()
+        editBox:SetText(cleaned)
+        editBox:SetCursorPosition(math.min(cursor, #cleaned))
+    end
+    return cleaned
 end
 
 -- Find an advertChannel entry by name (case-insensitive)
@@ -112,10 +131,11 @@ local function UpdatePassengerTab()
 
     if ns.state.myRequest then
         local req = ns.state.myRequest
+        local tipStr = ns.FormatTipNumber(req.tip)
         if req.claimedBy then
             activeReqLabel:SetText(string.format("|cff55ff55Active Request:|r %s — Claimed by |cff00ccff%s|r", req.city, req.claimedBy))
         else
-            activeReqLabel:SetText(string.format("|cffffd100Active Request:|r %s (%dg) — Waiting for a Mage...", req.city, req.tip))
+            activeReqLabel:SetText(string.format("|cffffd100Active Request:|r %s (%sg) — Waiting for a Mage...", req.city, tipStr))
         end
         cancelReqBtn:Show()
     else
@@ -248,6 +268,10 @@ local function UpdateMageTab()
         end
     end
 
+    if magePriceEditBox and not magePriceEditBox:HasFocus() then
+        magePriceEditBox:SetText(ns.db.magePrice or "1g")
+    end
+
     RefreshAdvertChannelsUI()
     SyncTemplateEditor(false)
 
@@ -272,9 +296,10 @@ local function UpdateMageTab()
             local age = math.floor(now - req.timestamp)
             local restBadge = req.isResting and "|cff55ff55[Inn]|r" or "|cffff5555[Out]|r"
             local srcBadge = (req.source == "WHISPER") and "|cffff80ff[W]|r " or ""
+            local tipStr = ns.FormatTipNumber(req.tip)
 
             row.playerText:SetText(srcBadge .. "|cffffffff" .. req.sender .. "|r " .. restBadge)
-            row.infoText:SetText(string.format("|cff00ccff%s|r  |  %s  |  |cffffd100%dg|r  |cff888888(%ds)|r", req.city, req.location, req.tip, age))
+            row.infoText:SetText(string.format("|cff00ccff%s|r  |  %s  |  |cffffd100%sg|r  |cff888888(%ds)|r", req.city, req.location, tipStr, age))
             row.customerName = req.sender
             row:Show()
         else
@@ -344,14 +369,30 @@ local function CreatePassengerTab(parent)
     tipTitle:SetText("Tip Offer (Gold):")
 
     tipEditBox = CreateFrame("EditBox", nil, tab1Frame, "InputBoxTemplate")
-    tipEditBox:SetSize(60, 22)
+    tipEditBox:SetSize(70, 22)
     tipEditBox:SetPoint("TOPLEFT", 145, -88)
     tipEditBox:SetAutoFocus(false)
-    tipEditBox:SetNumeric(true)
-    tipEditBox:SetText(tostring(ns.db.defaultTip or 2))
-    tipEditBox:SetScript("OnTextChanged", function(self)
-        local val = tonumber(self:GetText())
-        if val then ns.db.defaultTip = val end
+    tipEditBox:SetMaxLetters(10)
+    tipEditBox:SetText(ns.FormatTipNumber(ns.db.defaultTip or 2))
+    tipEditBox:SetScript("OnTextChanged", function(self, userInput)
+        local cleaned = SanitizeDecimalInput(self)
+        if userInput then
+            local val = tonumber(cleaned)
+            if val ~= nil then
+                ns.db.defaultTip = val
+            end
+        end
+    end)
+    tipEditBox:SetScript("OnEnterPressed", function(self)
+        local val = tonumber(SanitizeDecimalInput(self))
+        if val == nil then val = 0 end
+        ns.db.defaultTip = val
+        self:SetText(ns.FormatTipNumber(val))
+        self:ClearFocus()
+    end)
+    tipEditBox:SetScript("OnEscapePressed", function(self)
+        self:SetText(ns.FormatTipNumber(ns.db.defaultTip or 2))
+        self:ClearFocus()
     end)
 
     locLabel = tab1Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -435,10 +476,49 @@ local function CreateMageTab(parent)
     reagentStatusLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     reagentStatusLabel:SetPoint("TOPLEFT", 18, -79)
 
-    -- Learned / Offered Portals Selector Box
+    -- Learned / Offered Portals Selector Box + Price Input (flush right inside frame)
     local portalHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     portalHeader:SetPoint("TOPLEFT", 18, -96)
     portalHeader:SetText("Learned / Offered Portals:")
+
+    local priceHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    priceHeader:SetText("Price ({price}):")
+
+    magePriceEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
+    magePriceEditBox:SetSize(46, 20)
+    magePriceEditBox:SetPoint("TOPRIGHT", tab2Frame, "TOPRIGHT", -22, -92)
+    priceHeader:SetPoint("RIGHT", magePriceEditBox, "LEFT", -8, 0)
+    magePriceEditBox:SetAutoFocus(false)
+    magePriceEditBox:SetMaxLetters(10)
+    magePriceEditBox:SetText(ns.db.magePrice or "1g")
+    magePriceEditBox:SetScript("OnTextChanged", function(self, userInput)
+        if userInput then
+            local val = strtrim(self:GetText() or "")
+            ns.db.magePrice = (val ~= "") and val or "1g"
+        end
+    end)
+    magePriceEditBox:SetScript("OnEnterPressed", function(self)
+        local val = strtrim(self:GetText() or "")
+        if val == "" then val = "1g" end
+        if tonumber(val) then
+            val = ns.FormatTipNumber(val) .. "g"
+        end
+        ns.db.magePrice = val
+        self:SetText(val)
+        self:ClearFocus()
+    end)
+    magePriceEditBox:SetScript("OnEscapePressed", function(self)
+        self:SetText(ns.db.magePrice or "1g")
+        self:ClearFocus()
+    end)
+    magePriceEditBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Portal Price ({price})")
+        GameTooltip:AddLine("Replaces |cff00ccff{price}|r in your channel adverts (default: 1g).", 1, 1, 1)
+        GameTooltip:AddLine("|cffaaaaaaTip: Supports decimals like 0.5g or 1.5g.|r")
+        GameTooltip:Show()
+    end)
+    magePriceEditBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     local cities = ns.CITIES[ns.state.faction] or {}
     for idx, cityData in ipairs(cities) do
@@ -510,13 +590,13 @@ local function CreateMageTab(parent)
 
     local placeholderHint = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
     placeholderHint:SetPoint("TOPRIGHT", -18, -225)
-    placeholderHint:SetText("|cff888888Tags: {cities}  {cmds}|r")
+    placeholderHint:SetText("|cff888888{cities}  {cmds}  {price}|r")
 
     templateEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
-    templateEditBox:SetSize(316, 20)
+    templateEditBox:SetSize(256, 20)
     templateEditBox:SetPoint("TOPLEFT", 22, -240)
     templateEditBox:SetAutoFocus(false)
-    templateEditBox:SetMaxLetters(240)
+    templateEditBox:SetMaxLetters(255)
     templateEditBox:SetScript("OnEnterPressed", function(self)
         if selectedEditChannel then
             ns.SetAdvertChannelTemplate(selectedEditChannel, self:GetText())
@@ -533,13 +613,14 @@ local function CreateMageTab(parent)
         GameTooltip:AddLine("Custom Channel Advert Template")
         GameTooltip:AddLine("|cff00ccff{cities}|r = Checked portal cities (e.g. Orgrimmar, Undercity)", 1, 1, 1)
         GameTooltip:AddLine("|cff00ccff{cmds}|r = Whisper aliases (e.g. 'org' or 'uc')", 1, 1, 1)
+        GameTooltip:AddLine("|cff00ccff{price}|r = Configured portal price (e.g. 1g)", 1, 1, 1)
         GameTooltip:AddLine("|cffaaaaaaClick a channel above to switch templates.|r")
         GameTooltip:Show()
     end)
     templateEditBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     saveTemplateBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
-    saveTemplateBtn:SetSize(48, 22)
+    saveTemplateBtn:SetSize(46, 22)
     saveTemplateBtn:SetPoint("LEFT", templateEditBox, "RIGHT", 4, 0)
     saveTemplateBtn:SetText("Save")
     saveTemplateBtn:SetScript("OnClick", function()
@@ -554,12 +635,36 @@ local function CreateMageTab(parent)
     resetTemplateBtn:SetSize(48, 22)
     resetTemplateBtn:SetPoint("LEFT", saveTemplateBtn, "RIGHT", 3, 0)
     resetTemplateBtn:SetText("Reset")
+    resetTemplateBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Reset Selected Channel")
+        GameTooltip:AddLine("Restores the selected channel's text to its default.", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    resetTemplateBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
     resetTemplateBtn:SetScript("OnClick", function()
         if selectedEditChannel then
             ns.ResetAdvertChannelTemplate(selectedEditChannel)
             templateEditBox:ClearFocus()
             SyncTemplateEditor(true)
         end
+    end)
+
+    resetAllTemplatesBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    resetAllTemplatesBtn:SetSize(62, 22)
+    resetAllTemplatesBtn:SetPoint("LEFT", resetTemplateBtn, "RIGHT", 3, 0)
+    resetAllTemplatesBtn:SetText("Reset All")
+    resetAllTemplatesBtn:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Reset All Channels")
+        GameTooltip:AddLine("Restores every channel's advert text to its default.", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    resetAllTemplatesBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    resetAllTemplatesBtn:SetScript("OnClick", function()
+        ns.ResetAllAdvertChannelTemplates()
+        templateEditBox:ClearFocus()
+        SyncTemplateEditor(true)
     end)
 
     -- Request Queue List Container
