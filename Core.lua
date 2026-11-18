@@ -2,7 +2,7 @@ local addonName, ns = ...
 
 -- Initialize shared namespace
 ns.name = addonName
-ns.version = "1.2.2"
+ns.version = "1.2.3"
 ns.CHANNEL_NAME = "ForeverTaxi"
 ns.ADDON_PREFIX = "FTAXI"
 ns.REQUEST_TTL = 180 -- Seconds before a taxi request expires
@@ -43,6 +43,11 @@ function ns.GetFormattedMagePrice()
     return raw
 end
 
+-- Default whisper auto-reply template ({city} and {price} are substituted dynamically)
+function ns.GetDefaultWhisperReplyTemplate()
+    return "Hey! Got you down for a {city} portal — make sure you're inside an inn and I'll invite you shortly!"
+end
+
 -- Default message templates per channel ({cities}, {cmds}, and {price} are substituted dynamically)
 function ns.GetDefaultChannelTemplate(channelName)
     local lower = string.lower(strtrim(channelName or ""))
@@ -71,6 +76,8 @@ local defaults = {
     autoAcceptInvite = true,
     filterChatSpam = true,
     soundAlert = true,
+    whisperAutoReply = true,
+    whisperReplyTemplate = ns.GetDefaultWhisperReplyTemplate(),
     minimapAngle = 220,
     hudPos = { point = "CENTER", relativePoint = "CENTER", x = 0, y = 180 },
     knownPortals = {},   -- Keyed by "PlayerName-Realm" -> { ["Orgrimmar"] = true, ... }
@@ -271,6 +278,25 @@ function ns.ResetAllAdvertChannelTemplates()
         entry.template = ns.GetDefaultChannelTemplate(entry.name)
     end
     ns.Print("Reset all channel advert texts to default.")
+end
+
+-- Utility: Update custom whisper auto-reply template
+function ns.SetWhisperReplyTemplate(text)
+    if not ns.db then return end
+    local cleanText = strtrim(text or "")
+    if cleanText == "" then
+        ns.db.whisperReplyTemplate = ns.GetDefaultWhisperReplyTemplate()
+    else
+        ns.db.whisperReplyTemplate = cleanText
+    end
+    ns.Print("Saved whisper auto-reply text.")
+end
+
+-- Utility: Reset whisper auto-reply template to default
+function ns.ResetWhisperReplyTemplate()
+    if not ns.db then return end
+    ns.db.whisperReplyTemplate = ns.GetDefaultWhisperReplyTemplate()
+    ns.Print("Reset whisper auto-reply text to default.")
 end
 
 -- Utility: Get formatted current location

@@ -145,6 +145,22 @@ function ns.FormatAdvertMessage(entry, cityList, cmdList)
     return msg
 end
 
+-- Helper: Format the custom whisper auto-reply with {city} and {price}
+function ns.FormatWhisperReplyMessage(cityName)
+    local template = (ns.db and ns.db.whisperReplyTemplate and ns.db.whisperReplyTemplate ~= "")
+        and ns.db.whisperReplyTemplate
+        or ns.GetDefaultWhisperReplyTemplate()
+
+    local priceStr = ns.GetFormattedMagePrice()
+    local safeCity = string.gsub(cityName or "", "%%", "%%%%")
+    local safePrice = string.gsub(priceStr or "", "%%", "%%%%")
+
+    local msg = string.gsub(template, "{city}", safeCity)
+    msg = string.gsub(msg, "{price}", safePrice)
+    msg = string.gsub(msg, "|", "")
+    return msg
+end
+
 -- Mage: Cycle through checked & joined advert channels and pre-fill the configured advert
 function ns.MageBroadcastAdvert()
     if not ns.state.isMage then return end
@@ -322,12 +338,20 @@ end
 
 -- Helper: Extract a requested faction city from natural player whispers
 local function ExtractCityFromWhisper(lowerMsg)
-    -- Ignore all automated addon replies
+    -- Ignore all automated addon replies (including custom whisper reply prefixes)
     if string.find(lowerMsg, "^%[forever")
         or string.find(lowerMsg, "^on my way")
         or string.find(lowerMsg, "^hey! got you down")
         or string.find(lowerMsg, "^sorry, i don't have") then
         return nil, false
+    end
+
+    if ns.db and ns.db.whisperReplyTemplate and ns.db.whisperReplyTemplate ~= "" then
+        local rawPrefix = string.match(string.lower(ns.db.whisperReplyTemplate), "^([^{]+)")
+        rawPrefix = strtrim(rawPrefix or "")
+        if #rawPrefix >= 6 and string.sub(lowerMsg, 1, #rawPrefix) == rawPrefix then
+            return nil, false
+        end
     end
 
     -- Strip optional leading/trailing punctuation (!, ?, .) and normalize spaces
@@ -383,13 +407,6 @@ local function ParseWhisperCommand(msg, sender)
     local cityData, confident = ExtractCityFromWhisper(lowerMsg)
     if not cityData or not confident then return end
 
-    -- Enforce a 15-second reply cooldown per player
-    local now = GetTime()
-    if lastWhisperReply[normSender] and (now - lastWhisperReply[normSender]) < 15 then
-        return
-    end
-    lastWhisperReply[normSender] = now
-
     local enabledCities = ns.GetEnabledMageCities()
     local validExamples = {}
     for _, c in ipairs(enabledCities) do
@@ -398,24 +415,38 @@ local function ParseWhisperCommand(msg, sender)
     local offeredStr = (#validExamples > 0) and table.concat(validExamples, ", ") or "None"
 
     if not ns.IsPortalEnabled(cityData.name) then
-        SendChatMessage(
-            "Sorry, I don't have Portal: " .. cityData.name .. " learned yet! I can currently port to: " .. offeredStr,
-            "WHISPER",
-            nil,
-            normSender
-        )
+        if ns.db.whisperAutoReply then
+            local now = GetTime()
+            if not lastWhisperReply[normSender] or (now - lastWhisperReply[normSender]) >= 15 then
+                lastWhisperReply[normSender] = now
+                SendChatMessage(
+                    "Sorry, I don't have Portal: " .. cityData.name .. " learned yet! I can currently port to: " .. offeredStr,
+                    "WHISPER",
+                    nil,
+                    normSender
+                )
+            end
+        end
         return
     end
 
     local offeredTip = tonumber(string.match(lowerMsg, "(%d+%.?%d*)%s*g")) or tonumber(ns.db.defaultTip) or 2
 
     UpsertRequest(normSender, cityData, "Whisper Request (Verify Inn)", offeredTip, true, "WHISPER")
-    SendChatMessage(
-        string.format("Hey! Got you down for a %s portal — make sure you're inside an inn and I'll invite you shortly!", cityData.name),
-        "WHISPER",
-        nil,
-        normSender
-    )
+
+    if ns.db.whisperAutoReply then
+        -- Enforce a 15-second reply cooldown per player
+        local now = GetTime()
+        if lastWhisperReply[normSender] and (now - lastWhisperReply[normSender]) < 15 then
+            return
+        end
+        lastWhisperReply[normSender] = now
+
+        local replyMsg = ns.FormatWhisperReplyMessage(cityData.name)
+        if replyMsg ~= "" then
+            SendChatMessage(replyMsg, "WHISPER", nil, normSender)
+        end
+    end
 end
 
 -- Handle silent FTAXI addon whisper handshakes

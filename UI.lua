@@ -16,6 +16,7 @@ local channelPool = {}
 local channelBox, addChannelEditBox
 local selectedEditChannel = nil
 local templateHeaderLabel, templateEditBox, saveTemplateBtn, resetTemplateBtn, resetAllTemplatesBtn
+local whisperReplyEditBox, saveWhisperReplyBtn, resetWhisperReplyBtn, whisperReplyCB
 local requestRows = {}
 local emptyQueueLabel
 
@@ -99,6 +100,32 @@ local function SyncTemplateEditor(forceReloadText)
 
     if forceReloadText or not templateEditBox:HasFocus() then
         templateEditBox:SetText(entry.template or ns.GetDefaultChannelTemplate(entry.name))
+    end
+end
+
+-- Sync the whisper auto-reply editor box & enabled state
+local function SyncWhisperReplyEditor(forceReloadText)
+    if not whisperReplyEditBox or not ns.db then return end
+
+    local enabled = ns.db.whisperAutoReply and true or false
+    if whisperReplyCB then
+        whisperReplyCB:SetChecked(enabled)
+    end
+
+    if enabled then
+        whisperReplyEditBox:Enable()
+        whisperReplyEditBox:SetTextColor(1, 1, 1)
+        saveWhisperReplyBtn:Enable()
+        resetWhisperReplyBtn:Enable()
+    else
+        whisperReplyEditBox:Disable()
+        whisperReplyEditBox:SetTextColor(0.5, 0.5, 0.5)
+        saveWhisperReplyBtn:Disable()
+        resetWhisperReplyBtn:Disable()
+    end
+
+    if forceReloadText or not whisperReplyEditBox:HasFocus() then
+        whisperReplyEditBox:SetText(ns.db.whisperReplyTemplate or ns.GetDefaultWhisperReplyTemplate())
     end
 end
 
@@ -274,6 +301,7 @@ local function UpdateMageTab()
 
     RefreshAdvertChannelsUI()
     SyncTemplateEditor(false)
+    SyncWhisperReplyEditor(false)
 
     local scrolls, runes = ns.GetMageReagentCounts()
     reagentStatusLabel:SetText(string.format(
@@ -330,6 +358,7 @@ function ns.ToggleMainWindow()
     else
         mainFrame:Show()
         SyncTemplateEditor(true)
+        SyncWhisperReplyEditor(true)
         ns.UpdateUI()
     end
 end
@@ -451,14 +480,14 @@ local function CreateMageTab(parent)
     tab2Frame:SetAllPoints()
 
     toggleActiveBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
-    toggleActiveBtn:SetSize(245, 28)
-    toggleActiveBtn:SetPoint("TOPLEFT", 18, -46)
+    toggleActiveBtn:SetSize(245, 26)
+    toggleActiveBtn:SetPoint("TOPLEFT", 18, -42)
     toggleActiveBtn:SetScript("OnClick", function()
         ns.SetMageActive(not ns.state.mageActive)
     end)
 
     advertBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
-    advertBtn:SetSize(170, 28)
+    advertBtn:SetSize(170, 26)
     advertBtn:SetPoint("LEFT", toggleActiveBtn, "RIGHT", 8, 0)
     advertBtn:SetText("Post Channel Advert")
     advertBtn:SetScript("OnClick", function()
@@ -474,11 +503,11 @@ local function CreateMageTab(parent)
     advertBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
     reagentStatusLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    reagentStatusLabel:SetPoint("TOPLEFT", 18, -79)
+    reagentStatusLabel:SetPoint("TOPLEFT", 18, -72)
 
-    -- Learned / Offered Portals Selector Box + Price Input (flush right inside frame)
+    -- Learned / Offered Portals Selector Box + Price Input
     local portalHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    portalHeader:SetPoint("TOPLEFT", 18, -96)
+    portalHeader:SetPoint("TOPLEFT", 18, -88)
     portalHeader:SetText("Learned / Offered Portals:")
 
     local priceHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
@@ -486,7 +515,7 @@ local function CreateMageTab(parent)
 
     magePriceEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
     magePriceEditBox:SetSize(46, 20)
-    magePriceEditBox:SetPoint("TOPRIGHT", tab2Frame, "TOPRIGHT", -22, -92)
+    magePriceEditBox:SetPoint("TOPRIGHT", tab2Frame, "TOPRIGHT", -22, -84)
     priceHeader:SetPoint("RIGHT", magePriceEditBox, "LEFT", -8, 0)
     magePriceEditBox:SetAutoFocus(false)
     magePriceEditBox:SetMaxLetters(10)
@@ -514,7 +543,7 @@ local function CreateMageTab(parent)
     magePriceEditBox:SetScript("OnEnter", function(self)
         GameTooltip:SetOwner(self, "ANCHOR_TOP")
         GameTooltip:AddLine("Portal Price ({price})")
-        GameTooltip:AddLine("Replaces |cff00ccff{price}|r in your channel adverts (default: 1g).", 1, 1, 1)
+        GameTooltip:AddLine("Replaces |cff00ccff{price}|r in your channel adverts & whisper reply.", 1, 1, 1)
         GameTooltip:AddLine("|cffaaaaaaTip: Supports decimals like 0.5g or 1.5g.|r")
         GameTooltip:Show()
     end)
@@ -523,7 +552,7 @@ local function CreateMageTab(parent)
     local cities = ns.CITIES[ns.state.faction] or {}
     for idx, cityData in ipairs(cities) do
         local cb = CreateLabeledCheckbox(tab2Frame, 20)
-        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -110)
+        cb:SetPoint("TOPLEFT", 15 + ((idx - 1) * 140), -102)
         cb.cityName = cityData.name
         cb.spellName = cityData.spell
         cb.spellID = cityData.spellID
@@ -537,12 +566,12 @@ local function CreateMageTab(parent)
 
     -- Advertise Channels Selector + Add Field
     local chanHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    chanHeader:SetPoint("TOPLEFT", 18, -135)
+    chanHeader:SetPoint("TOPLEFT", 18, -126)
     chanHeader:SetText("Advertise Channels:")
 
     addChannelEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
     addChannelEditBox:SetSize(135, 20)
-    addChannelEditBox:SetPoint("TOPLEFT", 248, -131)
+    addChannelEditBox:SetPoint("TOPLEFT", 248, -122)
     addChannelEditBox:SetAutoFocus(false)
     addChannelEditBox:SetMaxLetters(32)
     addChannelEditBox:SetScript("OnEnterPressed", function(self)
@@ -579,22 +608,22 @@ local function CreateMageTab(parent)
     end)
 
     channelBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
-    channelBox:SetSize(424, 66)
-    channelBox:SetPoint("TOPLEFT", 18, -153)
+    channelBox:SetSize(424, 64)
+    channelBox:SetPoint("TOPLEFT", 18, -144)
     ApplyDarkBackdrop(channelBox, 0.45)
 
     -- Per-Channel Custom Advert Message Editor
     templateHeaderLabel = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    templateHeaderLabel:SetPoint("TOPLEFT", 18, -225)
+    templateHeaderLabel:SetPoint("TOPLEFT", 18, -214)
     templateHeaderLabel:SetText("Text for #ForeverTaxi:")
 
     local placeholderHint = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-    placeholderHint:SetPoint("TOPRIGHT", -18, -225)
+    placeholderHint:SetPoint("TOPRIGHT", -18, -214)
     placeholderHint:SetText("|cff888888{cities}  {cmds}  {price}|r")
 
     templateEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
     templateEditBox:SetSize(256, 20)
-    templateEditBox:SetPoint("TOPLEFT", 22, -240)
+    templateEditBox:SetPoint("TOPLEFT", 22, -228)
     templateEditBox:SetAutoFocus(false)
     templateEditBox:SetMaxLetters(255)
     templateEditBox:SetScript("OnEnterPressed", function(self)
@@ -667,14 +696,67 @@ local function CreateMageTab(parent)
         SyncTemplateEditor(true)
     end)
 
+    -- Whisper Auto-Reply Editor
+    local whisperReplyHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    whisperReplyHeader:SetPoint("TOPLEFT", 18, -254)
+    whisperReplyHeader:SetText("Whisper Auto-Reply:")
+
+    local whisperPlaceholderHint = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    whisperPlaceholderHint:SetPoint("TOPRIGHT", -18, -254)
+    whisperPlaceholderHint:SetText("|cff888888{city}  {price}|r")
+
+    whisperReplyEditBox = CreateFrame("EditBox", nil, tab2Frame, "InputBoxTemplate")
+    whisperReplyEditBox:SetSize(316, 20)
+    whisperReplyEditBox:SetPoint("TOPLEFT", 22, -268)
+    whisperReplyEditBox:SetAutoFocus(false)
+    whisperReplyEditBox:SetMaxLetters(255)
+    whisperReplyEditBox:SetScript("OnEnterPressed", function(self)
+        ns.SetWhisperReplyTemplate(self:GetText())
+        SyncWhisperReplyEditor(true)
+        self:ClearFocus()
+    end)
+    whisperReplyEditBox:SetScript("OnEscapePressed", function(self)
+        SyncWhisperReplyEditor(true)
+        self:ClearFocus()
+    end)
+    whisperReplyEditBox:SetScript("OnEnter", function(self)
+        GameTooltip:SetOwner(self, "ANCHOR_TOP")
+        GameTooltip:AddLine("Whisper Auto-Reply Message")
+        GameTooltip:AddLine("Sent automatically when a player whispers a city keyword.", 1, 1, 1)
+        GameTooltip:AddLine("|cff00ccff{city}|r = Requested city name (e.g. Orgrimmar)", 1, 1, 1)
+        GameTooltip:AddLine("|cff00ccff{price}|r = Configured portal price (e.g. 1g)", 1, 1, 1)
+        GameTooltip:Show()
+    end)
+    whisperReplyEditBox:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    saveWhisperReplyBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    saveWhisperReplyBtn:SetSize(48, 22)
+    saveWhisperReplyBtn:SetPoint("LEFT", whisperReplyEditBox, "RIGHT", 4, 0)
+    saveWhisperReplyBtn:SetText("Save")
+    saveWhisperReplyBtn:SetScript("OnClick", function()
+        ns.SetWhisperReplyTemplate(whisperReplyEditBox:GetText())
+        whisperReplyEditBox:ClearFocus()
+        SyncWhisperReplyEditor(true)
+    end)
+
+    resetWhisperReplyBtn = CreateFrame("Button", nil, tab2Frame, "UIPanelButtonTemplate")
+    resetWhisperReplyBtn:SetSize(52, 22)
+    resetWhisperReplyBtn:SetPoint("LEFT", saveWhisperReplyBtn, "RIGHT", 4, 0)
+    resetWhisperReplyBtn:SetText("Reset")
+    resetWhisperReplyBtn:SetScript("OnClick", function()
+        ns.ResetWhisperReplyTemplate()
+        whisperReplyEditBox:ClearFocus()
+        SyncWhisperReplyEditor(true)
+    end)
+
     -- Request Queue List Container
     local queueHeader = tab2Frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
-    queueHeader:SetPoint("TOPLEFT", 18, -268)
+    queueHeader:SetPoint("TOPLEFT", 18, -295)
     queueHeader:SetText("Incoming Passenger Requests:")
 
     local queueBox = CreateFrame("Frame", nil, tab2Frame, "BackdropTemplate")
-    queueBox:SetSize(424, 212)
-    queueBox:SetPoint("TOPLEFT", 18, -285)
+    queueBox:SetSize(424, 172)
+    queueBox:SetPoint("TOPLEFT", 18, -312)
     ApplyDarkBackdrop(queueBox, 0.5)
 
     emptyQueueLabel = queueBox:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -682,7 +764,7 @@ local function CreateMageTab(parent)
     emptyQueueLabel:SetWidth(380)
     emptyQueueLabel:SetText("|cff888888No pending taxi requests for your selected portals.|r")
 
-    for i = 1, 5 do
+    for i = 1, 4 do
         local row = CreateFrame("Frame", nil, queueBox, "BackdropTemplate")
         row:SetSize(408, 37)
         row:SetPoint("TOPLEFT", 8, -7 - ((i - 1) * 40))
@@ -711,23 +793,33 @@ local function CreateMageTab(parent)
     end
 
     -- Bottom Settings Checkboxes
-    local filterCB = CreateLabeledCheckbox(tab2Frame, 22)
-    filterCB:SetPoint("TOPLEFT", 14, -503)
+    local filterCB = CreateLabeledCheckbox(tab2Frame, 20)
+    filterCB:SetPoint("TOPLEFT", 14, -488)
     filterCB:SetChecked(ns.db.filterChatSpam)
-    filterCB.label:SetText("Hide [FT:...] protocol tags in chat")
+    filterCB.label:SetText("Hide [FT:...] protocol tags")
     filterCB:SetScript("OnClick", function(self)
         ns.db.filterChatSpam = self:GetChecked() and true or false
     end)
 
-    local soundCB = CreateLabeledCheckbox(tab2Frame, 22)
-    soundCB:SetPoint("TOPLEFT", 240, -503)
+    local soundCB = CreateLabeledCheckbox(tab2Frame, 20)
+    soundCB:SetPoint("TOPLEFT", 225, -488)
     soundCB:SetChecked(ns.db.soundAlert)
     soundCB.label:SetText("Sound alert on new request")
     soundCB:SetScript("OnClick", function(self)
         ns.db.soundAlert = self:GetChecked() and true or false
     end)
 
+    whisperReplyCB = CreateLabeledCheckbox(tab2Frame, 20)
+    whisperReplyCB:SetPoint("TOPLEFT", 14, -509)
+    whisperReplyCB:SetChecked(ns.db.whisperAutoReply)
+    whisperReplyCB.label:SetText("Auto-reply to whisper requests")
+    whisperReplyCB:SetScript("OnClick", function(self)
+        ns.db.whisperAutoReply = self:GetChecked() and true or false
+        SyncWhisperReplyEditor(false)
+    end)
+
     SyncTemplateEditor(true)
+    SyncWhisperReplyEditor(true)
 end
 
 -- Create Draggable Minimap Button
