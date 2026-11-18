@@ -4,6 +4,7 @@ local hudFrame
 local inviteBtn, scrollBtn, portalBtn, clearBtn
 local customerText, locationText, destText, statusText, reagentText
 local pendingPortalSpell = nil
+local pendingShowHUD = false
 
 -- Scan player bags to find the exact Item ID of Scroll of Liminal Passage
 local function FindLiminalScrollItemString()
@@ -54,11 +55,21 @@ local function ApplySecureAttributes()
     pendingPortalSpell = nil
 end
 
+function ns.HideSecureHUD()
+    if not hudFrame then return end
+    pendingShowHUD = false
+    if InCombatLockdown() then
+        hudFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        return
+    end
+    hudFrame:Hide()
+end
+
 function ns.UpdateSecureHUD()
     if not hudFrame then return end
     local job = ns.state.activeJob
     if not job then
-        hudFrame:Hide()
+        ns.HideSecureHUD()
         return
     end
 
@@ -101,17 +112,12 @@ end
 function ns.ShowSecureHUD()
     if not hudFrame then return end
     ns.UpdateSecureHUD()
-    hudFrame:Show()
-end
-
-function ns.HideSecureHUD()
-    if not hudFrame then return end
     if InCombatLockdown() then
-        ns.Print("|cffffaa00Cannot hide Secure HUD during combat; it will close when combat ends.|r")
+        pendingShowHUD = true
         hudFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
         return
     end
-    hudFrame:Hide()
+    hudFrame:Show()
 end
 
 function ns.InitSecureHUD()
@@ -238,8 +244,14 @@ function ns.InitSecureHUD()
             self:UnregisterEvent("PLAYER_REGEN_ENABLED")
             if not ns.state.activeJob then
                 self:Hide()
-            elseif pendingPortalSpell then
-                ApplySecureAttributes()
+            else
+                if pendingPortalSpell then
+                    ApplySecureAttributes()
+                end
+                if pendingShowHUD then
+                    pendingShowHUD = false
+                    self:Show()
+                end
             end
         end
     end)
